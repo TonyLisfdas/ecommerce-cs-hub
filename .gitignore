@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+out/
+*.log
+win32-embed.log
+cs-hub-vault.json
+*.exe
+*.dmg
+.DS_Store
+Thumbs.db

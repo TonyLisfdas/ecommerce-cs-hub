@@ -1,0 +1,59 @@
+{
+  "name": "ecommerce-cs-hub",
+  "version": "1.2.0",
+  "description": "八大电商平台（抖店/淘宝/拼多多/微信小店/快手/小红书/京东/闲鱼）多店铺聚合客服工作台 - 独立Session多开、原版客服界面净化、来消息变色闪烁+提示音、账密加密自动登录",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "preview": "node preview-server.js",
+    "build:win": "electron-builder --win --x64",
+    "build:dir": "electron-builder --dir"
+  },
+  "keywords": [
+    "ecommerce",
+    "customer-service",
+    "douyin-feige",
+    "pinduoduo",
+    "qianniu",
+    "xiaohongshu",
+    "jd-dongdong",
+    "kuaishou",
+    "xianyu",
+    "weixin-store",
+    "electron"
+  ],
+  "author": "Ecommerce CS Hub",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.cshub.ecommerce.aggregator",
+    "productName": "聚客宝-八合一电商客服工作台",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "preload-watcher.js",
+      "src/**/*",
+      "scripts/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "${productName}-v${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "聚客宝-电商客服工作台"
+    }
+  }
+}

@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>聚客宝 · 八大电商平台聚合客服工作台 (纯客服多开版)</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- ====================================================================
+       第一层：像浏览器一样的顶部多店铺标签栏（点击零延迟切换、收到消息变色呼吸闪烁）
+       ==================================================================== -->
+  <header class="tabbar-container">
+    <div class="app-brand" title="八大电商平台纯客服聚合接待系统">
+      <div class="brand-logo">聚</div>
+      <div>
+        <span class="brand-title">聚客宝·客服聚合台</span>
+        <span class="brand-subtitle">纯客服无后台</span>
+      </div>
+    </div>
+
+    <!-- 店铺标签页滚动区（支持8大平台 + 同平台多店铺多开） -->
+    <div id="tabsScrollArea" class="tabs-scroll-area"></div>
+
+    <!-- 右侧操作区：总未读提醒 + 新增同平台多开店铺 -->
+    <div class="tabbar-actions">
+      <div id="globalUnreadPill" class="global-unread-pill">
+        <span>待回复总数:</span>
+        <strong id="globalUnreadCount">0</strong>
+      </div>
+      <button id="btnOpenAddShop" class="btn-add-shop" title="同一平台添加第2家、第3家店铺（独立Cookie隔离，绝不串号）">
+        <span>＋ 添加店铺 / 同平台多开</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ====================================================================
+       第二层：当前店铺纯净客服控制栏（去后台开关、保存账密自动登录、提示音、消息测试）
+       ==================================================================== -->
+  <section class="toolbar-container">
+    <div class="toolbar-left">
+      <div class="current-shop-indicator">
+        <span id="currentPlatformBadge" class="tab-platform-icon" style="width:18px;height:18px;font-size:10px;">抖</span>
+        <strong id="currentShopLabel">抖店·主营1店</strong>
+        <span id="currentPartitionLabel" class="partition-tag" title="每个店铺拥有完全独立的Cookie与本地存储沙箱，多开不串号">persist:shop_douyin_1</span>
+      </div>
+
+      <!-- 切换官方客服入口地址 / Win32原生嵌入 -->
+      <select id="urlEntrySelect" class="url-select" title="切换该平台的官方纯客服入口或Windows窗口内嵌模式"></select>
+
+      <!-- 纯净客服模式（隐藏商家后台菜单） -->
+      <button id="btnToggleCleanMode" class="toolbar-btn btn-active-green" title="自动注入CSS隐藏商品管理/营销中心等商家后台菜单，100%只保留原版客服聊天界面">
+        <span>✨ 纯净客服模式: 已开启(无后台)</span>
+      </button>
+
+      <!-- 账密保险箱与一键自动填充登录 -->
+      <button id="btnOpenVault" class="toolbar-btn btn-credential" title="加密保存该店铺账号密码，打开软件自动填充登录">
+        <span>🔐 保存账密 / 自动登录设置</span>
+      </button>
+
+      <button id="btnAutoFillNow" class="toolbar-btn" title="立即向当前客服页面自动填入已保存的账号密码">
+        <span>⚡ 一键填入账密</span>
+      </button>
+    </div>
+
+    <div class="toolbar-right">
+      <!-- 模拟买家发来新消息（立即体验后台标签页变色闪烁 + 客服提示音） -->
+      <button id="btnSimulateIncoming" class="toolbar-btn btn-test-alert" title="立即触发一条其他平台买家发来的新消息，测试标签页变色闪烁+提示音">
+        <span>🔔 模拟来消息 (测试闪烁+声音)</span>
+      </button>
+
+      <button id="btnAutoStream" class="toolbar-btn" title="开启后每6秒随机模拟各平台买家发来咨询消息">
+        <span>⏱️ 自动消息流: 关</span>
+      </button>
+
+      <!-- 提示音选择与试听 -->
+      <select id="soundToneSelect" class="url-select" style="max-width: 145px;" title="选择收到新消息时的提示音风格">
+        <option value="dingdong">🔔 叮咚客服音 (经典)</option>
+        <option value="crystal">🎵 清脆水晶铃 (柔和)</option>
+        <option value="urgent">🚨 急促多巴胺 (防漏单)</option>
+        <option value="mute">🔇 静音模式 (仅闪烁)</option>
+      </select>
+
+      <button id="btnTestSound" class="toolbar-btn" title="试听当前选择的客服提示音">
+        <span>🔊 试听</span>
+      </button>
+
+      <button id="btnToggleQuickReply" class="toolbar-btn btn-active-green" title="显示/隐藏右侧跨平台通用快捷回复话术栏">
+        <span>💬 快捷话术</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       第三层：主工作台区域（各平台原版客服窗口容器 + 右侧快捷话术栏）
+       ==================================================================== -->
+  <main class="workspace-body">
+    <!-- 左侧多店铺客服视图舞台 -->
+    <div id="webviewsStage" class="webviews-stage"></div>
+
+    <!-- 右侧跨平台通用快捷回复抽屉 -->
+    <aside id="quickReplyDrawer" class="quick-reply-drawer">
+      <div class="drawer-header">
+        <span>⚡ 八平台通用快捷话术</span>
+        <span style="font-size:11px;color:#38bdf8;font-weight:400;">点击直接填入/发送</span>
+      </div>
+      <div id="quickReplyList" class="drawer-list"></div>
+    </aside>
+  </main>
+
+  <!-- ====================================================================
+       弹窗 1：保存店铺账密 & 自动登录保险箱
+       ==================================================================== -->
+  <div id="vaultModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-title">
+        <span id="vaultModalTitle">🔐 店铺账密保存与自动登录设置</span>
+        <button id="btnCloseVault" class="btn-secondary" style="height:26px;padding:0 8px;">✕</button>
+      </div>
+      <p class="modal-desc">
+        <strong>双重免登录机制：</strong>① 每个店铺标签页具备独立持久化 Cookie 沙箱（<code>persist:shop_id</code>），扫码或密码登录一次后下次打开软件直接保持已登录状态；② 当平台登录态过期时，自动使用下方加密保存的账密填入登录框。
+      </p>
+
+      <div class="form-group">
+        <label>店铺显示名称（显示在顶部标签页上，方便区分多家店）</label>
+        <input id="vaultShopName" type="text" class="form-input" placeholder="例如：抖店·女装旗舰店" />
+      </div>
+
+      <div class="form-group">
+        <label>登录账号 / 手机号 / 子账号名（如：店铺名:客服小美）</label>
+        <input id="vaultUsername" type="text" class="form-input" placeholder="输入该平台客服子账号或手机号" />
+      </div>
+
+      <div class="form-group">
+        <label>登录密码（本地 AES-256-GCM 加密存储，绝不上传外网）</label>
+        <input id="vaultPassword" type="password" class="form-input" placeholder="输入登录密码" />
+      </div>
+
+      <label class="form-checkbox-row">
+        <input id="vaultAutoFill" type="checkbox" checked />
+        <span>打开客服页面检测到登录框时，自动切换到密码模式并填入账密</span>
+      </label>
+
+      <label class="form-checkbox-row">
+        <input id="vaultAutoSubmit" type="checkbox" />
+        <span>填入账密后自动点击「登录」按钮（无滑块验证码平台可勾选）</span>
+      </label>
+
+      <div class="modal-actions" style="justify-content: space-between;">
+        <button id="btnClearCookie" class="btn-secondary" style="color:#fca5a5;" title="清除该店铺独立沙箱缓存以切换其他账号">
+          🗑️ 清除此店登录缓存
+        </button>
+        <div style="display:flex;gap:8px;">
+          <button id="btnCancelVault" class="btn-secondary">取消</button>
+          <button id="btnSaveVault" class="btn-primary">💾 加密保存并立即填充</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       弹窗 2：添加新店铺 / 同平台多开标签页
+       ==================================================================== -->
+  <div id="addShopModal" class="modal-backdrop hidden">
+    <div class="modal-card">
+      <div class="modal-title">
+        <span>＋ 添加新店铺 / 同平台多账号多开</span>
+        <button id="btnCloseAddShop" class="btn-secondary" style="height:26px;padding:0 8px;">✕</button>
+      </div>
+      <p class="modal-desc">
+        支持在同一电商平台（如抖店、拼多多、淘宝、微信小店等）同时开启多个店铺客服窗口。系统会自动为新店铺分配独立的 <code>persist:shop_xxx</code> 隔离容器，Cookie 互不干扰、永不串号。
+      </p>
+
+      <div class="form-group">
+        <label>选择电商平台</label>
+        <select id="newShopPlatform" class="form-select"></select>
+      </div>
+
+      <div class="form-group">
+        <label>店铺自定义名称（显示在标签栏上）</label>
+        <input id="newShopName" type="text" class="form-input" placeholder="例如：抖店·男装专营2店 / 拼多多·百货3店" />
+      </div>
+
+      <div class="form-group">
+        <label>预设客服登录账号（选填，可在标签页打开后随时设置）</label>
+        <input id="newShopUser" type="text" class="form-input" placeholder="手机号 / 客服子账号" />
+      </div>
+
+      <div class="form-group">
+        <label>预设登录密码（选填，本地 AES-256 加密保存）</label>
+        <input id="newShopPass" type="password" class="form-input" placeholder="登录密码" />
+      </div>
+
+      <div class="modal-actions">
+        <button id="btnCancelAddShop" class="btn-secondary">取消</button>
+        <button id="btnConfirmAddShop" class="btn-primary">🚀 立即创建独立客服标签页</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右下角新消息实时弹窗栈 -->
+  <div id="toastStack" class="toast-stack"></div>
+
+  <script src="../platforms.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
