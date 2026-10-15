@@ -306,14 +306,12 @@ public class W6 {
       timer = new System.Threading.Timer((state) => {
         try {
           if (!IsWindow(ownerRef) || !IsWindow(target)) { f.Close(); return; }
-          bool ownerMin = IsIconic(ownerRef);
-          if (ownerMin) {
-            if (IsWindowVisible(target)) ShowWindow(target, SW_HIDE);
-          } else {
-            if (IsWindowVisible(target)) Reposition(target, ownerRef, cx, cy, cw, ch, scale, styleMode, true);
-          }
+          // 位置跟随：owner move/resize 时，若目标当前可见则重定位（覆盖拖拽丢帧）。
+          // 最小化/还原的可见性交给 Owned 原生机制（owner 最小化→owned 自动隐藏，还原→自动回来），
+          // 这里不手动 SW_HIDE，否则还原时 Owned 无法把客户端带回来。
+          if (IsWindowVisible(target)) Reposition(target, ownerRef, cx, cy, cw, ch, scale, styleMode, true);
         } catch {}
-      }, null, System.Threading.Timeout.Infinite, followMs);
+      }, null, 200, followMs);
       Application.Run(f);
     } catch (Exception ex) {
       Console.Error.WriteLine("WATCHER_ERR " + ex.Message);
