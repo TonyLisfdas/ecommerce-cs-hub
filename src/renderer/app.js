@@ -155,6 +155,7 @@
     renderAllTabs();
     renderAllShopPanes();
     renderQuickReplies();
+    await win32PruneCacheOnStartup(); // 修复19: 启动清理失效缓存（逐条校验）
     switchToShopTab(appState.activeShopId || appState.shops[0]?.id);
     // ★ 创建拖拽指示器 DOM（竖线 #tabDropIndicator + ghost #tabDragGhost）
     if (!document.getElementById('tabDropIndicator')) {
@@ -266,17 +267,49 @@
   const _win32EmbeddingLock = {};    // shop.id -> true，正在接管中（单飞，杜绝冷启动并发竞争）
   const _win32TakenOver = {};        // shop.id -> true，已完整接管过（之后只 show/hide + 跟随，绝不重复 SetWindowLongPtr）
   const WIN32_HWND_CACHE_KEY = 'cs_hub_win32_hwnd_cache_v1';
+  const win32Fingerprint = {}; // shop.id -> {hwnd, procName, className, title, w, h}（修复18 指纹）
+  function win32NormEntry(v) { return (v && typeof v === 'object' && v.hwnd) ? v : { hwnd: v }; }
   function win32ReadHwndCache() {
     try { const raw = localStorage.getItem(WIN32_HWND_CACHE_KEY); const o = raw ? JSON.parse(raw) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
   }
   function win32SaveHwndCache() {
     try {
       const cache = {};
-      Object.keys(win32EmbeddedHwnd).forEach((sid) => { cache[sid] = win32EmbeddedHwnd[sid]; });
+      Object.keys(win32EmbeddedHwnd).forEach((sid) => {
+        cache[sid] = win32Fingerprint[sid] || { hwnd: win32EmbeddedHwnd[sid] }; // 存指纹对象（含 className 等）
+      });
       localStorage.setItem(WIN32_HWND_CACHE_KEY, JSON.stringify(cache));
     } catch (e) {}
   }
-  function win32CachedHwnd(shop) { return win32EmbeddedHwnd[shop.id] || win32ReadHwndCache()[shop.id] || 0; }
+  function win32CachedHwnd(shop) {
+    if (win32EmbeddedHwnd[shop.id]) return win32EmbeddedHwnd[shop.id];
+    const e = win32ReadHwndCache()[shop.id];
+    return e ? win32NormEntry(e).hwnd : 0;
+  }
+  function win32CachedInfo(shop) {
+    if (win32EmbeddedHwnd[shop.id] && win32Fingerprint[shop.id]) return win32Fingerprint[shop.id];
+    const e = win32ReadHwndCache()[shop.id];
+    return e ? win32NormEntry(e) : { hwnd: 0 };
+  }
+  // 修复19: 启动清理失效缓存（逐条跑修复18 校验，不过即删）
+  async function win32PruneCacheOnStartup() {
+    if (!isElectron || !window.csElectronAPI.win32Embed) return;
+    try {
+      const cache = win32ReadHwndCache();
+      for (const sid of Object.keys(cache)) {
+        const shopObj = (appState.shops || []).find((x) => x.id === sid);
+        const plat = shopObj ? platformMap[shopObj.platformId] : null;
+        const info = win32NormEntry(cache[sid]);
+        if (!plat || !plat.win32ProcessName || !info.hwnd) { delete cache[sid]; continue; }
+        const chk = await window.csElectronAPI.win32Embed({
+          action: 'validatecache', targetHwnd: info.hwnd,
+          processName: plat.win32ProcessName, expectClass: info.className || ''
+        });
+        if (!(chk && chk.reuse)) delete cache[sid];
+      }
+      localStorage.setItem(WIN32_HWND_CACHE_KEY, JSON.stringify(cache));
+    } catch (e) {}
+  }
 
   // 重新接管（强制完整接管流程，用于“重新接管”按钮 / 渲染异常时重置）
   function win32ForceRetakeover(shop) {
@@ -300,13 +333,25 @@
     if (!force) {
       const cached = win32CachedHwnd(shop); // 内存 或 localStorage（重启后仍在，跳过扫描与接管）
       if (cached) {
-        // 重启后内存 _win32TakenOver 丢失，但 localStorage 缓存还在 → 先用 IsWindow 校验有效性
-        let valid = true;
-        try { const chk = await window.csElectronAPI.win32Embed({ action: 'iswindow', targetHwnd: cached }); valid = !!(chk && chk.exists); } catch (e) { valid = true; }
+        // 修复18: 缓存指纹校验（进程名/类名/可见/尺寸/标题），不能只验 IsWindow
+        const info = win32CachedInfo(shop);
+        let valid = false;
+        try {
+          const chk = await window.csElectronAPI.win32Embed({
+            action: 'validatecache', targetHwnd: cached,
+            processName: plat.win32ProcessName,
+            titleKeyword: (plat.win32TitleKeywords && plat.win32TitleKeywords[0]) || '客服',
+            expectClass: info.className || ''
+          });
+          valid = !!(chk && chk.reuse);
+        } catch (e) { valid = true; } // 校验调用失败 → 保守走 show（会重绑 owner+定位）
         if (!valid) {
-          // 缓存失效（窗口已关/换了新进程）→ 重置标记，落到下方完整接管
+          // 缓存指纹不符（如陈旧 132590）→ 丢弃，落到下方完整 list+embed 重选
           _win32TakenOver[shop.id] = false;
           delete win32EmbeddedHwnd[shop.id];
+          delete win32Fingerprint[shop.id];
+          const _c = win32ReadHwndCache(); delete _c[shop.id];
+          try { localStorage.setItem(WIN32_HWND_CACHE_KEY, JSON.stringify(_c)); } catch (e) {}
           win32SaveHwndCache();
         } else {
           win32EmbeddedHwnd[shop.id] = cached;
@@ -368,6 +413,17 @@
       return;
     }
     win32EmbeddedHwnd[shop.id] = hwnd;
+    // 修复18: 记录指纹（进程/类名/标题/尺寸），写入缓存供重启后校验复用
+    {
+      const _cands = (res && (res.candidates || res.windows)) || [];
+      const _pinfo = _cands.find((c) => c && Number(c.hwnd) === hwnd) || null;
+      win32Fingerprint[shop.id] = {
+        hwnd: hwnd, procName: plat.win32ProcessName,
+        className: _pinfo ? (_pinfo.className || '') : '',
+        title: target ? (target.title || '') : '',
+        w: _pinfo ? (Number(_pinfo.w) || 0) : 0, h: _pinfo ? (Number(_pinfo.h) || 0) : 0
+      };
+    }
     _win32TakenOver[shop.id] = true;   // ★ 首次接管成功，打“已接管”标记
     win32SaveHwndCache();              // ★ 持久化 {shop.id: hwnd}，重启后可复用
     const rect = frame ? frame.getBoundingClientRect() : { left: 0, top: 92, width: 1280, height: 760 };

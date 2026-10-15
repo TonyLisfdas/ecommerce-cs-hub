@@ -388,7 +388,7 @@ ipcMain.handle('cs-trigger-system-alert', async (event, { shopId, shopName, plat
   return { ok: true };
 });
 
-ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeyword, bounds, targetHwnd, styleMode }) => {
+ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeyword, bounds, targetHwnd, styleMode, expectClass }) => {
   if (process.platform !== 'win32') {
     return { ok: false, error: '当前不是 Windows 系统，原生窗口嵌入仅在 Windows 10/11 上可用' };
   }
@@ -420,7 +420,9 @@ ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeywo
     '-TargetHwnd',
     String(targetHwnd || 0),
     '-StyleMode',
-    styleMode || 'auto'
+    styleMode || 'auto',
+    '-ExpectClass',
+    expectClass || ''
   ];
 
   const result = await new Promise((resolve) => {
@@ -552,9 +554,28 @@ if (!gotSingleInstanceLock) {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   killOrphanWin32WatchersAll(); // Fix 14: 启动时先清理上一实例遗留的孤儿 watcher 进程
   createMainWindow();
+
+  // 修复19: 启动救援 —— 若上次是强杀/崩溃退出（before-quit detach 没跑），客服窗口会永远藏在后台。
+  // 对 platforms.js 登记的 win32ProcessName 各跑一次 rescue（RESTORE+SHOW，绝不关窗）。
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const rescueProcs = [...new Set(PLATFORMS.filter((p) => p.supportWin32Embed).map((p) => p.win32ProcessName).filter(Boolean))];
+  const mainHwndNow = getMainOwnerHwnd();
+  console.log('[win32] STARTUP mainHwnd=' + mainHwndNow + ' rescue process=[' + rescueProcs.join(',') + ']');
+  for (const pn of rescueProcs) {
+    try {
+      await new Promise((res) => {
+        execFile('powershell.exe', [
+          '-NoProfile', '-ExecutionPolicy', 'Bypass',
+          '-File', path.join(__dirname, 'scripts', 'win32-embed.ps1'),
+          '-Action', 'rescue', '-ProcessName', pn, '-ParentHwnd', String(getMainOwnerHwnd())
+        ], { timeout: 8000 }, () => res());
+      });
+    } catch (e) {}
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });

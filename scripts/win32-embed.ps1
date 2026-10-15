@@ -24,7 +24,8 @@ param(
   [int]$Height = 760,
   [ValidateSet("auto","removeBorder","keepTitlebar")]
   [string]$StyleMode = "auto",
-  [int]$FollowMs = 60
+  [int]$FollowMs = 60,
+  [string]$ExpectClass = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -73,6 +74,7 @@ public class W6 {
   [DllImport("shcore.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmod, WinEventProc proc, uint idProc, uint idThread, uint flags);
   [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
   public delegate IntPtr WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint dwt, uint t);
 
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
@@ -336,17 +338,87 @@ public class W6 {
   }
 
   // ---------- 轻量显示 + 定位（show：不重新接管） ----------
+  // 修复17: 每次 show 幂等重绑 owner —— 重启后旧主窗已销毁、新主窗 HWND 不同，必须重绑到新主窗，
+  // 否则新主窗 z-order 靠上会盖在客户端旧坐标上、点击被 Electron 抢走。
   public static int[] DoLightShow(IntPtr child, IntPtr owner, int cx, int cy, int cw, int ch, string styleMode) {
     int captionH = GetSystemMetrics(SM_CYCAPTION);
     if (captionH <= 0) captionH = 23;
     int childDpi = SafeDpi(child);
     int hostDpi = SafeDpi(owner);
     double scale = (double)childDpi / hostDpi;
+    if (owner.ToInt64() > 0) SetWindowLongPtr(child, GWLP_HWNDPARENT, owner); // ★ 修复17 重绑 owner（幂等）
     ShowWindow(child, SW_SHOW);
-    int[] rr = Reposition(child, owner, cx, cy, cw, ch, scale, styleMode, true);
+    int[] rr = Reposition(child, owner, cx, cy, cw, ch, scale, styleMode, true); // SetWindowPos(HWND_TOP,...)
     return rr;
   }
 
+  // ---------- 修复18: 缓存指纹校验（不能只验 IsWindow） ----------
+  public static Dictionary<string, object> ValidateTarget(IntPtr hwnd, string procName, string expectClass) {
+    var d = new Dictionary<string, object>();
+    bool alive = IsWindow(hwnd);
+    bool vis = alive && IsWindowVisible(hwnd);
+    string pnm = ""; bool procOk = false;
+    uint pid = 0;
+    if (alive) {
+      GetWindowThreadProcessId(hwnd, out pid);
+      try { var pp = Process.GetProcessById((int)pid); if (pp != null) pnm = pp.ProcessName; } catch { }
+      procOk = !string.IsNullOrEmpty(procName) && pnm.IndexOf(procName, StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+    string cls = ""; bool clsOk = false; bool clsBlack = false;
+    if (alive) { var sb2 = new StringBuilder(150); GetClassName(hwnd, sb2, 150); cls = sb2.ToString(); }
+    clsOk = !string.IsNullOrEmpty(expectClass) && cls == expectClass;
+    if (cls.IndexOf("Chrome_WidgetWin_0", StringComparison.OrdinalIgnoreCase) >= 0
+      || cls.IndexOf("MSCTFIME", StringComparison.OrdinalIgnoreCase) >= 0
+      || cls.IndexOf("IME", StringComparison.OrdinalIgnoreCase) >= 0
+      || cls.IndexOf("GDI", StringComparison.OrdinalIgnoreCase) >= 0
+      || cls.IndexOf("tooltips_class32", StringComparison.OrdinalIgnoreCase) >= 0) clsBlack = true;
+    RECT r; GetWindowRect(hwnd, out r); int w = r.R - r.L, h = r.B - r.T;
+    bool sizeOk = w >= 200 && h >= 200;
+    int ttl = GetWindowTextLength(hwnd); bool titleOk = ttl > 0;
+    bool reuse = alive && vis && procOk && clsOk && !clsBlack && sizeOk && titleOk;
+    d["hwnd"] = hwnd.ToInt64();
+    d["process"] = pnm;
+    d["className"] = cls;
+    d["size"] = w + "x" + h;
+    d["checks"] = "IsWindow=" + alive + " IsWindowVisible=" + vis + " proc=" + (procOk ? "OK" : "FAIL")
+      + " class=" + (clsOk ? "OK" : "FAIL") + " black=" + clsBlack + " size=" + (sizeOk ? "OK" : "FAIL") + " title=" + (titleOk ? "OK" : "FAIL");
+    d["reuse"] = reuse;
+    return d;
+  }
+
+  // ---------- 修复19: 启动救援（biz-only 关键词过滤，避免 Find 全枚举超时） ----------
+  public static List<long> Rescue(string procName) {
+    var pidSet = new HashSet<uint>();
+    foreach (var pp in System.Diagnostics.Process.GetProcesses()) {
+      try { if (string.Equals(pp.ProcessName, procName, StringComparison.OrdinalIgnoreCase)) pidSet.Add((uint)pp.Id); } catch {} finally { pp.Dispose(); }
+    }
+    if (pidSet.Count == 0) return new List<long>();
+    var restored = new List<long>();
+    EnumWindows((h, l) => {
+      try {
+        uint p2; GetWindowThreadProcessId(h, out p2);
+        if (!pidSet.Contains(p2)) return true;
+        RECT rr; GetWindowRect(h, out rr);
+        int w = rr.R - rr.L, ht = rr.B - rr.T;
+        if (w < 200 || ht < 200) return true;
+        if (IsWindowVisible(h)) return true;  // 已可见不救
+        var t = new StringBuilder(300); GetWindowText(h, t, 300); string title = t.ToString();
+        bool biz = title.IndexOf("接待", StringComparison.OrdinalIgnoreCase) >= 0
+          || title.IndexOf("客服", StringComparison.OrdinalIgnoreCase) >= 0
+          || title.IndexOf("旺旺", StringComparison.OrdinalIgnoreCase) >= 0
+          || title.IndexOf("咚咚", StringComparison.OrdinalIgnoreCase) >= 0
+          || title.IndexOf("千帆", StringComparison.OrdinalIgnoreCase) >= 0
+          || title.IndexOf("eva", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (biz && IsWindow(h)) {
+          ShowWindow(h, SW_RESTORE);
+          ShowWindow(h, SW_SHOW);
+          restored.Add(h.ToInt64());
+        }
+      } catch {}
+      return true;
+    }, IntPtr.Zero);
+    return restored;
+  }
   // ---------- 跟随 watcher（修复13：owner 最小化/离屏守卫 + 目标失效自退出） ----------
   public static int RunWatcher(IntPtr target, IntPtr owner, int cx, int cy, int cw, int ch, string styleMode, int followMs) {
     WinEventProc procObj = null;
@@ -462,14 +534,14 @@ if ($Action -eq "hide") {
   @{ ok=$true } | ConvertTo-Json -Compress; exit 0
 }
 
-# ---------------------------------------------------------------- show (轻量：显示+定位，不重新接管)
+# ---------------------------------------------------------------- show (修复17：显示+重绑owner+定位，不重新接管)
 if ($Action -eq "show") {
   if ($TargetHwnd -gt 0 -and $ParentHwnd -gt 0) {
     [W6]::DoLightShow([IntPtr]$TargetHwnd, [IntPtr]$ParentHwnd, $X, $Y, $Width, $Height, $StyleMode) | Out-Null
-    Log ("SHOW target=" + $TargetHwnd + " light-show+reposition (no re-takeover)")
+    Log ("SHOW target=" + $TargetHwnd + " owner=" + $ParentHwnd + " (rebound=是) light-show+rebind-owner+reposition")
   } elseif ($TargetHwnd -gt 0) {
     [W6]::ShowWindow([IntPtr]$TargetHwnd, [W6]::SW_SHOW) | Out-Null
-    Log ("SHOW target=" + $TargetHwnd + " SW_SHOW only")
+    Log ("SHOW target=" + $TargetHwnd + " SW_SHOW only (no owner)")
   }
   @{ ok=$true } | ConvertTo-Json -Compress; exit 0
 }
@@ -488,6 +560,23 @@ if ($Action -eq "iswindow") {
   $exists = $false
   if ($TargetHwnd -gt 0) { $exists = [W6]::IsWindow([IntPtr]$TargetHwnd) }
   @{ ok=$true; exists=$exists; targetHwnd=$TargetHwnd } | ConvertTo-Json -Compress; exit 0
+}
+
+# ---------------------------------------------------------------- validatecache (修复18: 缓存指纹校验)
+if ($Action -eq "validatecache") {
+  if ($TargetHwnd -le 0) { @{ ok=$true; reuse=$false; reason='no-target' } | ConvertTo-Json -Compress; exit 0 }
+  $expectCls = if ($ExpectClass) { $ExpectClass } else { $TitleKeyword }
+  $v = [W6]::ValidateTarget([IntPtr]$TargetHwnd, $ProcessName, $expectCls)
+  $verdict = if ($v["reuse"]) { "REUSE" } else { "DISCARD, fallback to list" }
+  Log ("CACHE_VALIDATE: hwnd=" + $TargetHwnd + " proc=" + $v["process"] + " class=" + $v["className"] + " " + $v["checks"] + " ==> " + $verdict)
+  @{ ok=$true; reuse=$v["reuse"]; process=$v["process"]; className=$v["className"]; size=$v["size"]; checks=$v["checks"]; targetHwnd=$TargetHwnd } | ConvertTo-Json -Compress; exit 0
+}
+
+# ---------------------------------------------------------------- rescue (修复19: 启动救援)
+if ($Action -eq "rescue") {
+  $restored = [W6]::Rescue($ProcessName)
+  Log ("RESCUE: 恢复了 " + $restored.Count + " 个窗口, HWND=[" + ($restored -join ', ') + "] (process=" + $ProcessName + ")")
+  @{ ok=$true; restored=$restored.Count; hwnds=$restored; processName=$ProcessName } | ConvertTo-Json -Compress; exit 0
 }
 
 # ---------------------------------------------------------------- detach / detach-all (清 owner + 还原样式，绝不关窗口)
