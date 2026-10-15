@@ -1,18 +1,19 @@
-﻿/**
+/**
  * main.js - 聚客宝·八大电商平台聚合客服工作台 (Electron 主进程)
  * 核心能力：
  * 1. 多店铺独立 Session 沙箱隔离（persist:shop_{shopId}），同一平台可同时登录多家店铺互不串号
  * 2. 账密本地 AES-256-GCM 加密持久化存储，配合 preload-watcher.js 实现自动填充登录
  * 3. 请求头净化（移除 X-Frame-Options / CSP frame-ancestors 限制）与标准 Chrome UA 伪装
  * 4. 收到新消息时：Windows 任务栏高亮闪烁 (flashFrame) + 系统右下角通知（点击直达对应店铺标签页）
- * 5. Windows 原生窗口内嵌桥接（支持把本地千牛「接待中心」独立聊天窗口嵌进标签页）
+ * 5. Windows 原生窗口内嵌桥接（Owned Top-Level 方案：把本地千牛「接待中心」/千帆接待窗接入标签页，
+ *    窗口保持独立顶层、保留自身消息循环，鼠标键盘 100% 正常；SetWinEventHook+60ms 轮询实时跟随）
  */
 
 const { app, BrowserWindow, ipcMain, session, Notification, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const { PLATFORMS } = require('./src/platforms');
 
 const CHROME_USER_AGENT =
@@ -20,6 +21,57 @@ const CHROME_USER_AGENT =
 
 let mainWindow = null;
 const configuredPartitions = new Set();
+
+// ============================================================================
+// Win32 跟随 watcher（Owned Top-Level 实时跟随：SetWinEventHook + 60ms 轮询兜底）
+// 每个被接管的客户端窗口对应一个常驻 PowerShell watcher 进程；
+// 切标签 hide/show 不动它（稳定常驻），主窗口 resize 时按新内容尺寸重建。
+// ============================================================================
+const win32Watchers = {}; // String(targetHwnd) -> { proc, targetHwnd, styleMode, x,y,w,h, processName, titleKeyword }
+
+function getMainOwnerHwnd() {
+  if (!mainWindow || mainWindow.isDestroyed()) return 0;
+  try {
+    const buf = mainWindow.getNativeWindowHandle();
+    return Number(buf.length >= 8 ? buf.readBigInt64LE(0) : buf.readInt32LE(0));
+  } catch (e) { return 0; }
+}
+
+function killWin32Watcher(targetHwnd) {
+  const key = String(targetHwnd);
+  const w = win32Watchers[key];
+  if (w && w.proc) { try { w.proc.kill(); } catch (e) {} }
+  delete win32Watchers[key];
+}
+
+function spawnWin32Watcher(opts) {
+  const targetHwnd = opts.targetHwnd;
+  if (!targetHwnd) return null;
+  killWin32Watcher(targetHwnd);
+  const scriptPath = path.join(__dirname, 'scripts', 'win32-embed.ps1');
+  const args = [
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
+    '-Action', 'watch',
+    '-TargetHwnd', String(targetHwnd),
+    '-ParentHwnd', String(opts.ownerHwnd || 0),
+    '-X', String(opts.x || 0), '-Y', String(opts.y || 92),
+    '-Width', String(opts.w || 1280), '-Height', String(opts.h || 760),
+    '-StyleMode', opts.styleMode || 'auto',
+    '-ProcessName', opts.processName || 'AliWorkbench',
+    '-TitleKeyword', opts.titleKeyword || '接待中心',
+    '-FollowMs', '60'
+  ];
+  let proc = null;
+  try {
+    proc = spawn('powershell.exe', args, { stdio: 'ignore' });
+  } catch (e) { return null; }
+  win32Watchers[String(targetHwnd)] = {
+    proc, targetHwnd, styleMode: opts.styleMode || 'auto',
+    x: opts.x || 0, y: opts.y || 92, w: opts.w || 1280, h: opts.h || 760,
+    processName: opts.processName || 'AliWorkbench', titleKeyword: opts.titleKeyword || '接待中心'
+  };
+  return proc;
+}
 
 // ============================================================================
 // 本地加密配置与账密保险箱 (AES-256-GCM)
@@ -53,7 +105,7 @@ function decryptText(cipherPayload) {
       Buffer.from(ivHex, 'hex')
     );
     decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
-    let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+    let decrypted = decipher.update(encryptedHex, 'utf8', 'hex');
     decrypted += decipher.final('utf8');
     return decrypted;
   } catch (err) {
@@ -92,8 +144,8 @@ function getDefaultState() {
       { id: 'qr1', category: '发货物流', title: '当天发货承诺', text: '亲，咱们家的现货订单每天下午 16:00 前拍下都是当天安排发出的哦，一般 2-3 天左右就能收到啦~' },
       { id: 'qr2', category: '尺码导购', title: '尺码推荐询问', text: '亲，您可以告诉我一下您的身高、体重以及平时常穿的尺码吗？我帮您精准核对一下版型哈！' },
       { id: 'qr3', category: '改地址/核对', title: '确认修改地址', text: '收到亲！只要包裹还没被快递员揽收，我现在马上在系统里帮您登记修改收货地址，请稍等1分钟哈~' },
-      { id: 'qr4', category: '售后安抚', title: '退换货无忧', text: '亲您放心，咱们店铺支持7天无理由退换货且赠送运费险，如果有任何不合适直接申请换货/退货就可以，运费系统会自动理赔的！' },
-      { id: 'qr5', category: '发票开具', title: '电子发票说明', text: '亲，确认收货后您可以在订单详情页直接申请开具电子普票/专票，也可以直接把【发票抬头+税号+邮箱】发给我，我帮您登记开具！' }
+      { id: 'qr4', category: '售后安抚', title: '退换货无忧', text: '亲您放心，咱们店铺支持7天无理由退换货并赠送运费险，如果有任何不合适直接申请换货/退货就可以，系统会自动理赔的！' },
+      { id: 'qr5', category: '发票开具', title: '发票开具说明', text: '好的亲！确认收货后您可以在订单详情页直接申请开具电子普票/专票，也可以直接把【发票抬头+税号+邮箱】发给我，我会帮您登记开具的！' }
     ]
   };
 }
@@ -234,16 +286,22 @@ function createMainWindow() {
     mainWindow.flashFrame(false);
   });
 
-  // 主窗口 resize → 通知渲染进程重新对齐 win32 嵌入窗口（500ms debounce）
+  // 主窗口 resize → 按新内容尺寸重建 win32 跟随 watcher + 通知渲染进程（500ms debounce）
   let _resizeTimer = null;
   mainWindow.on('resize', () => {
     if (_resizeTimer) clearTimeout(_resizeTimer);
     _resizeTimer = setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('cs-window-resized', {
-          width: mainWindow.getContentSize()[0],
-          height: mainWindow.getContentSize()[1]
+        const cw = mainWindow.getContentSize()[0];
+        const ch = mainWindow.getContentSize()[1];
+        const ownerHwnd = getMainOwnerHwnd();
+        Object.values(win32Watchers).forEach((w) => {
+          spawnWin32Watcher({
+            targetHwnd: w.targetHwnd, ownerHwnd, x: w.x, y: w.y, w: cw, h: ch,
+            styleMode: w.styleMode, processName: w.processName, titleKeyword: w.titleKeyword
+          });
         });
+        mainWindow.webContents.send('cs-window-resized', { width: cw, height: ch });
       }
     }, 500);
   });
@@ -298,15 +356,12 @@ ipcMain.handle('cs-trigger-system-alert', async (event, { shopId, shopName, plat
   return { ok: true };
 });
 
-ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeyword, bounds, targetHwnd }) => {
+ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeyword, bounds, targetHwnd, styleMode }) => {
   if (process.platform !== 'win32') {
     return { ok: false, error: '当前不是 Windows 系统，原生窗口嵌入仅在 Windows 10/11 上可用' };
   }
-  const scriptPath = path.join(__dirname, 'scripts/win32-embed.ps1');
-  const parentHwndBuf = mainWindow ? mainWindow.getNativeWindowHandle() : null;
-  const parentHwnd = parentHwndBuf
-    ? (parentHwndBuf.length >= 8 ? Number(parentHwndBuf.readBigInt64LE(0)) : parentHwndBuf.readInt32LE(0))
-    : 0;
+  const scriptPath = path.join(__dirname, 'scripts', 'win32-embed.ps1');
+  const ownerHwnd = getMainOwnerHwnd();
 
   const args = [
     '-NoProfile',
@@ -321,7 +376,7 @@ ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeywo
     '-TitleKeyword',
     titleKeyword || '接待中心',
     '-ParentHwnd',
-    String(parentHwnd),
+    String(ownerHwnd),
     '-X',
     String(bounds?.x || 0),
     '-Y',
@@ -331,10 +386,12 @@ ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeywo
     '-Height',
     String(bounds?.height || 760),
     '-TargetHwnd',
-    String(targetHwnd || 0)
+    String(targetHwnd || 0),
+    '-StyleMode',
+    styleMode || 'auto'
   ];
 
-  return new Promise((resolve) => {
+  const result = await new Promise((resolve) => {
     execFile('powershell.exe', args, { timeout: 6000 }, (err, stdout) => {
       if (err) {
         resolve({ ok: false, error: err.message });
@@ -347,6 +404,31 @@ ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeywo
       }
     });
   });
+
+  // Owned Top-Level 实时跟随：接管(embed)后重建 watcher；show 时若已有 watcher 则保持常驻不动（稳定）
+  if (result && result.ok && targetHwnd) {
+    const key = String(Number(targetHwnd));
+    if (action === 'embed' || !win32Watchers[key]) {
+      spawnWin32Watcher({
+        targetHwnd: Number(targetHwnd),
+        ownerHwnd: ownerHwnd,
+        x: bounds?.x || 0,
+        y: bounds?.y || 92,
+        w: bounds?.width || 1280,
+        h: bounds?.height || 760,
+        styleMode: styleMode || 'auto',
+        processName: processName || 'AliWorkbench',
+        titleKeyword: titleKeyword || '接待中心'
+      });
+    }
+  }
+  // 弹出还原(detach)时，停掉对应的跟随 watcher（窗口已交还桌面）
+  if (action === 'detach' || action === 'detach-all') {
+    if (targetHwnd) killWin32Watcher(Number(targetHwnd));
+    else Object.keys(win32Watchers).forEach((k) => killWin32Watcher(k));
+  }
+
+  return result;
 });
 
 // ============================================================================
@@ -403,10 +485,11 @@ function applyWeixinCookiePersist(partitionName) {
 }
 
 // ============================================================================
-// 退出前自动还原所有被内嵌的原生客服窗口（千牛/微信/咚咚/多多），
-// 防止关闭本软件时把客户端窗口一起关掉
+// 退出前：先停跟随 watcher，再 detach-only 还原所有被接管的原生客服窗口
+// （清 owner + 还原样式 + 桌面显示原窗口），绝不 WM_CLOSE 关掉千牛/千帆
 // ============================================================================
 app.on('before-quit', () => {
+  Object.keys(win32Watchers).forEach((k) => killWin32Watcher(k));
   ['AliWorkbench', '千帆客服工作台', 'WeChat', 'JMWorkbench', 'PddWorkbench'].forEach((pn) => {
     try {
       execFile('powershell.exe', [
