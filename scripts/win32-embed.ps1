@@ -1,18 +1,16 @@
 ﻿<#
 .SYNOPSIS
-  Windows 原生客服窗口内嵌模块 v6 (Owned Top-Level 方案，Qt5 + Chromium/Electron 双内核兼容)
-  核心变更（v4 -> v6）：
-  - 放弃 SetParent+WS_CHILD（Chromium 渲染层会盖在子窗口之上吃掉所有鼠标点击）
-  - 改用 GWLP_HWNDPARENT 把客户端设为【拥有者顶层窗口(Owned Top-Level)】：
-      窗口仍是独立顶层、保留自己的消息循环，鼠标/键盘 100% 正常，
-      且永远浮在 owner 之上；owner 最小化时自动隐藏，owner 还原时自动回来。
-  - 去任务栏/去 Alt-Tab：exstyle 去 WS_EX_APPWINDOW、加 WS_EX_TOOLWINDOW
-  - 边框两种策略（自动/去边框/保留标题栏上移），结论写入日志
-  - 实时跟随：SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE) + 60ms 轮询兜底（watch action 常驻）
-  - 保留：DPI 补偿、黑屏兜底、win32-embed.log 日志
+  Windows 原生客服窗口内嵌模块 v6.3 (Owned Top-Level 方案，Qt5 + Chromium/Electron 双内核兼容)
+  核心变更（v6 -> v6.3）：
+  - 修复12: 窗口选取重写 —— 第一道硬过滤(不可见/空标题/尺寸<200/类名黑名单含Chrome_WidgetWin_0/标题黑名单加载中等)
+            + 第二道排序(关键词: 接待中心>客服工作台>千帆>eva>旺旺 > 类名Win_1 > 面积 > z-order)，
+            并输出候选明细 + 最终选中 + 选中理由（写入 win32-embed.log）
+  - 修复13: watcher 守卫 —— owner 最小化(IsIconic)/离屏(rect<=-30000) 不重定位；owner 还原的当个 tick 立即重定位；
+            目标窗口 IsWindow 失效则 watcher 自行退出
+  - 保留: GWLP_HWNDPARENT 拥有者顶层(去任务栏 TOOLWINDOW/去边框不加 WS_CHILD)、SetWinEventHook+60ms 跟随、
+          DPI 补偿、黑屏兜底、日志、detach 清 owner 不关窗口
   动作：list | embed | watch | hide | show | reposition | detach | detach-all | iswindow
-  说明：watch / embed -Watch 是长驻进程（主进程用 spawn 保活）；detach 只做清 owner + 还原样式，
-       绝不 WM_CLOSE 客户端窗口。
+  说明：watch 是长驻进程（主进程 spawn 保活、单实例去重）；detach 只做清 owner + 还原样式，绝不 WM_CLOSE。
 #>
 param(
   [string]$Action = "list",
@@ -53,7 +51,6 @@ using System.Threading;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Windows.Forms;
-using System.Timers;
 
 public class W6 {
   // ---------- P/Invoke ----------
@@ -74,8 +71,8 @@ public class W6 {
   [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int ht, uint flags);
   [DllImport("shcore.dll")] public static extern uint GetDpiForWindow(IntPtr h);
-  // 事件钩子（实时跟随）
   [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmod, WinEventProc proc, uint idProc, uint idThread, uint flags);
+  [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr h);
   public delegate IntPtr WinEventProc(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint dwt, uint t);
 
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
@@ -111,7 +108,13 @@ public class W6 {
   public class WinInfo {
     public long hwnd; public int pid; public string title; public string className;
     public int w; public int h; public bool isMinimized; public bool isCollapsed; public bool isVisible;
-    public int priority;
+    public int priority;      // 关键词排序：0接待中心 1客服工作台 2千帆 3eva 4旺旺 5传入keyword 9无
+    public int classRank;     // 0=Chrome_WidgetWin_1 1=其他
+    public int zIndex;        // EnumWindows 顺序（越小越靠前）
+    public bool isCandidate;  // 是否通过第一道硬过滤
+    public string excludedReason;
+    public string pickReason;
+    public long Area() { return (long)w * h; }
   }
 
   public static int SafeDpi(IntPtr h) {
@@ -119,12 +122,14 @@ public class W6 {
     return 96;
   }
 
+  // ---------- 修复12: 第一道硬过滤 + 第二道排序 ----------
   public static List<WinInfo> Find(string processName, string keyword) {
     var pidSet = new HashSet<uint>();
     foreach (var p in Process.GetProcesses()) {
       try { if (string.Equals(p.ProcessName, processName, StringComparison.OrdinalIgnoreCase)) pidSet.Add((uint)p.Id); } catch {} finally { p.Dispose(); }
     }
     var list = new List<WinInfo>();
+    int zidx = 0;
     EnumWindows((h, l) => {
       try {
         uint pid; GetWindowThreadProcessId(h, out pid);
@@ -132,32 +137,97 @@ public class W6 {
         var t = new StringBuilder(300); GetWindowText(h, t, 300);
         var c = new StringBuilder(150); GetClassName(h, c, 150);
         string title = t.ToString();
+        string cn = c.ToString();
         RECT r; GetWindowRect(h, out r);
         int w = r.R - r.L, ht = r.B - r.T;
         int style = (int)GetWindowLongPtr(h, GWL_STYLE).ToInt64();
-        if (title.IndexOf("千牛工作台", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-        if (title.IndexOf("设置", StringComparison.Ordinal) >= 0 && title.Length < 12) return true;
-        int pr = 9;
-        if (title.IndexOf("接待中心", StringComparison.OrdinalIgnoreCase) >= 0) pr = 0;
-        else if (title.IndexOf("客服", StringComparison.OrdinalIgnoreCase) >= 0) pr = 1;
-        else if (title.IndexOf("千帆", StringComparison.OrdinalIgnoreCase) >= 0) pr = 2;
-        else if (title.IndexOf("旺旺", StringComparison.OrdinalIgnoreCase) >= 0) pr = 3;
-        else if (title.IndexOf("咚咚", StringComparison.OrdinalIgnoreCase) >= 0) pr = 4;
-        else if (!string.IsNullOrEmpty(keyword) && title.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0) pr = 5;
-        list.Add(new WinInfo {
-          hwnd = h.ToInt64(), pid = (int)pid, title = title, className = c.ToString(),
+        var info = new WinInfo {
+          hwnd = h.ToInt64(), pid = (int)pid, title = title, className = cn,
           w = w, h = ht, isMinimized = (style & WS_MINIMIZE) != 0,
-          isCollapsed = (w <= 200 || ht <= 200), isVisible = IsWindowVisible(h), priority = pr
-        });
+          isCollapsed = (w <= 200 || ht <= 200), isVisible = IsWindowVisible(h),
+          priority = 9, classRank = 1, zIndex = zidx++
+        };
+        // ---- 第一道硬过滤（命中即丢弃，记录原因） ----
+        if (!info.isVisible) { info.excludedReason = "invisible"; list.Add(info); return true; }
+        if (string.IsNullOrEmpty(title)) { info.excludedReason = "empty-title"; list.Add(info); return true; }
+        if (w < 200 || ht < 200) { info.excludedReason = "too-small"; list.Add(info); return true; }
+        if (cn.IndexOf("MSCTFIME", StringComparison.OrdinalIgnoreCase) >= 0
+            || cn.IndexOf("IME", StringComparison.OrdinalIgnoreCase) >= 0
+            || cn.IndexOf("GDI", StringComparison.OrdinalIgnoreCase) >= 0
+            || cn.IndexOf("tooltips_class32", StringComparison.OrdinalIgnoreCase) >= 0
+            || cn.IndexOf("Chrome_WidgetWin_0", StringComparison.OrdinalIgnoreCase) >= 0) {
+          info.excludedReason = "class-blacklist:" + cn;
+          list.Add(info); return true;
+        }
+        if (title.IndexOf("\u52A0\u8F7D\u4E2D", StringComparison.OrdinalIgnoreCase) >= 0          // 加载中
+            || title.IndexOf("Default IME", StringComparison.OrdinalIgnoreCase) >= 0
+            || title.IndexOf("GDI+Window", StringComparison.OrdinalIgnoreCase) >= 0
+            || title.IndexOf("\u5343\u725B\u5DE5\u4F5C\u53F0", StringComparison.OrdinalIgnoreCase) >= 0  // 千牛工作台(主后台,非接待窗)
+            || (title.IndexOf("\u8BBE\u7F6E", StringComparison.Ordinal) >= 0 && title.Length < 12)) { // 设置
+          info.excludedReason = "title-blacklist:" + title;
+          list.Add(info); return true;
+        }
+        // ---- 第二道排序键 ----
+        // ① 标题关键词: 接待中心>客服工作台>千帆>eva>旺旺（千帆真窗口标题就是 eva）
+        if (title.IndexOf("\u63A5\u5F85\u4E2D\u5FC3", StringComparison.OrdinalIgnoreCase) >= 0) info.priority = 0;
+        else if (title.IndexOf("\u5BA2\u670D\u5DE5\u4F5C\u53F0", StringComparison.OrdinalIgnoreCase) >= 0) info.priority = 1;
+        else if (title.IndexOf("\u5343\u5E06", StringComparison.OrdinalIgnoreCase) >= 0) info.priority = 2;
+        else if (title.IndexOf("eva", StringComparison.OrdinalIgnoreCase) >= 0) info.priority = 3;
+        else if (title.IndexOf("\u65FA\u65FA", StringComparison.OrdinalIgnoreCase) >= 0) info.priority = 4;
+        else if (!string.IsNullOrEmpty(keyword) && title.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0) info.priority = 5;
+        // ② Electron/CEF 客户端 Chrome_WidgetWin_1 优于其他
+        info.classRank = cn.Equals("Chrome_WidgetWin_1") ? 0 : 1;
+        info.isCandidate = true;
+        list.Add(info);
       } catch {}
       return true;
     }, IntPtr.Zero);
-    list.Sort((a, b) => a.priority != b.priority ? a.priority.CompareTo(b.priority) : (a.isVisible ? 0 : 1).CompareTo(b.isVisible ? 0 : 1));
+    // 排序: ①关键词rank → ②类名rank → ③面积大优先 → ④z-order靠前优先；非候选排最后
+    list.Sort((a, b) => {
+      if (a.isCandidate != b.isCandidate) return a.isCandidate ? -1 : 1;
+      if (!a.isCandidate) {
+        var c1 = a.excludedReason ?? ""; var c2 = b.excludedReason ?? "";
+        return string.CompareOrdinal(c1, c2);
+      }
+      int c = a.priority.CompareTo(b.priority); if (c != 0) return c;
+      c = a.classRank.CompareTo(b.classRank); if (c != 0) return c;
+      c = b.Area().CompareTo(a.Area()); if (c != 0) return c;
+      return a.zIndex.CompareTo(b.zIndex);
+    });
     return list;
   }
 
-  // 计算目标屏幕矩形（跟随 owner 实时位置）
-  // owner 是当前屏幕位置；X/Y/W/H 是渲染层传入的视口相对内容区 CSS 尺寸；scale 做 DPI 补偿
+  // 从 Find 结果选出目标 + 生成"选中理由"（供日志核对）
+  public static WinInfo Pick(List<WinInfo> all) {
+    WinInfo p = null;
+    foreach (var x in all) { if (x.isCandidate) { p = x; break; } }
+    if (p == null) return null;
+    string kwName = null;
+    switch (p.priority) {
+      case 0: kwName = "接待中心"; break;
+      case 1: kwName = "客服工作台"; break;
+      case 2: kwName = "千帆"; break;
+      case 3: kwName = "eva"; break;
+      case 4: kwName = "旺旺"; break;
+      case 5: kwName = "keyword"; break;
+    }
+    if (kwName != null) {
+      p.pickReason = "R1-keyword'" + kwName + "'(rank" + p.priority + ") + visible + class=" + p.className + " " + p.w + "x" + p.h;
+    } else {
+      p.pickReason = "R1-fallback(no-keyword-hit) + visible + class=" + p.className + " + largest-area=" + p.Area() + " + z-order#" + p.zIndex + " (title '" + p.title + "')";
+    }
+    return p;
+  }
+
+  // owner 是否离屏（最小化时 Windows 把窗口挪到 -32000）
+  public static bool OwnerOffscreen(IntPtr owner) {
+    if (owner.ToInt64() <= 0) return true;
+    RECT r;
+    if (!GetWindowRect(owner, out r)) return true;
+    return r.L <= -30000 || r.T <= -30000;
+  }
+
+  // ---------- 计算目标屏幕矩形（跟随 owner 实时位置） ----------
   public static int[] ComputeTargetRect(IntPtr owner, int cx, int cy, int cw, int ch, double scale, string styleMode, int captionH) {
     RECT r; GetWindowRect(owner, out r);
     POINT cp = new POINT(); cp.x = 0; cp.y = 0; ClientToScreen(owner, ref cp);
@@ -173,12 +243,23 @@ public class W6 {
     int captionH = 0;
     try { captionH = GetSystemMetrics(SM_CYCAPTION); if (captionH <= 0) captionH = 23; } catch {}
     int[] rr = ComputeTargetRect(owner, cx, cy, cw, ch, scale, styleMode, captionH);
-    uint flags = SWP_FRAMECHANGED | SWP_SHOWWINDOW | (noActivate ? SWP_NOACTIVATE : SWP_NOACTIVATE);
+    uint flags = SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE;
     SetWindowPos(target, (IntPtr)HWND_TOP, rr[0], rr[1], rr[2], rr[3], flags);
     return rr;
   }
 
-  // ---------- Owned Top-Level 接管（替代 v4 的 SetParent embed） ----------
+  // 守卫式重定位（修复13）：owner 最小化/离屏 → 跳过；目标可见才动
+  public static bool GuardedReposition(IntPtr target, IntPtr owner, int cx, int cy, int cw, int ch, double scale, string styleMode) {
+    if (!IsWindow(target)) return false;
+    if (owner.ToInt64() > 0) {
+      if (IsIconic(owner)) return false;      // owner 最小化 → 不重定位（Owned 原生会自动隐藏）
+      if (OwnerOffscreen(owner)) return false; // owner 离屏(-32000) → 不重定位
+    }
+    if (IsWindowVisible(target)) Reposition(target, owner, cx, cy, cw, ch, scale, styleMode, true);
+    return true;
+  }
+
+  // ---------- Owned Top-Level 接管（embed） ----------
   public static Dictionary<string, object> DoEmbedOwned(IntPtr child, IntPtr owner, int cx, int cy, int cw, int ch, string styleMode) {
     var log = new List<string>();
     int childDpi = SafeDpi(child);
@@ -194,42 +275,34 @@ public class W6 {
     RECT r0; GetWindowRect(child, out r0);
     bool wasCollapsed = (r0.R - r0.L) <= 200 || (r0.B - r0.T) <= 200;
     int oldEx = (int)GetWindowLongPtr(child, GWL_EXSTYLE).ToInt64();
-
-    // 记录原样式用于 detach 恢复
     log.Add("oldStyle=" + oldStyle.ToString("X8") + " oldEx=" + oldEx.ToString("X8") + " wasMin=" + wasMinimized + " wasCollapsed=" + wasCollapsed);
 
-    // 1) RESTORE -> SHOW（折叠态 199x34 也能救回）
     ShowWindow(child, SW_RESTORE);
     ShowWindow(child, SW_SHOW);
     log.Add("step1: RESTORE + SHOW");
     Thread.Sleep(300);
 
-    // 2) ★ 核心：设置【拥有者 owner】而非父窗口。窗口保持顶层、保留自身消息循环，输入正常。
     if (owner.ToInt64() > 0) {
       SetWindowLongPtr(child, GWLP_HWNDPARENT, owner);
       log.Add("step2: GWLP_HWNDPARENT -> owner=" + owner + " (Owned Top-Level, 不是 SetParent)");
     }
 
-    // 3) 去任务栏 / 去 Alt-Tab
     int ex2 = (int)GetWindowLongPtr(child, GWL_EXSTYLE).ToInt64();
     ex2 = (ex2 & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW;
     SetWindowLongPtr(child, GWL_EXSTYLE, (IntPtr)(long)ex2);
     log.Add("step3: exstyle -> -WS_EX_APPWINDOW +WS_EX_TOOLWINDOW (去任务栏/Alt-Tab)");
 
-    // 4) 边框策略（★ 绝不加 WS_CHILD，一旦加就退化成子窗口、丢输入）
     string used;
     if (styleMode == "auto") { used = "removeBorder"; } else { used = styleMode; }
     if (used == "removeBorder") {
       int st = (int)GetWindowLongPtr(child, GWL_STYLE).ToInt64();
-      st = st & ~WS_CAPTION & ~WS_THICKFRAME; // 去边框，保持顶层，不加 WS_CHILD
+      st = st & ~WS_CAPTION & ~WS_THICKFRAME; // 去边框，保持顶层，绝不加 WS_CHILD
       SetWindowLongPtr(child, GWL_STYLE, (IntPtr)(long)st);
       log.Add("step4: STYLE_STRATEGY=removeBorder (st&=~CAPTION&~THICKFRAME, 无 WS_CHILD)");
     } else {
-      // keepTitlebar: 保留标题栏，靠 Reposition 把 Y 上移 captionH 让标题栏露在可见区外
       log.Add("step4: STYLE_STRATEGY=keepTitlebar (保留标题栏, Reposition 上移 caption=" + captionH + ")");
     }
 
-    // 5) 黑屏兜底：原本折叠/最小化的 Chromium/Qt -> MINIMIZE->RESTORE 触发重绘
     string blackScreen = "no";
     if (wasMinimized || wasCollapsed) {
       ShowWindow(child, SW_MINIMIZE_CMD); Thread.Sleep(200);
@@ -240,7 +313,6 @@ public class W6 {
       log.Add("step5: 尺寸正常, 跳过黑屏兜底");
     }
 
-    // 6) 初次定位（屏幕坐标，跟随 owner）
     int[] rr = Reposition(child, owner, cx, cy, cw, ch, scale, used, true);
     log.Add("step6: SetWindowPos(HWND_TOP) at screen " + rr[0] + "," + rr[1] + " " + rr[2] + "x" + rr[3]);
     Thread.Sleep(150);
@@ -263,7 +335,7 @@ public class W6 {
     return res;
   }
 
-  // ---------- 轻量显示 + 定位（不重新接管，用于切回标签 / resize / focus 置顶） ----------
+  // ---------- 轻量显示 + 定位（show：不重新接管） ----------
   public static int[] DoLightShow(IntPtr child, IntPtr owner, int cx, int cy, int cw, int ch, string styleMode) {
     int captionH = GetSystemMetrics(SM_CYCAPTION);
     if (captionH <= 0) captionH = 23;
@@ -275,11 +347,8 @@ public class W6 {
     return rr;
   }
 
-  // ---------- 跟随 watcher：SetWinEventHook + 60ms 轮询 ----------
-  // 只在目标【当前可见】时校正位置/置顶；目标被 hide 时保持隐藏，不与渲染层抢可见性。
-  // owner 最小化 -> 隐藏目标；owner 还原且目标可见 -> 显示并置顶。owner/目标任一消失 -> 退出。
+  // ---------- 跟随 watcher（修复13：owner 最小化/离屏守卫 + 目标失效自退出） ----------
   public static int RunWatcher(IntPtr target, IntPtr owner, int cx, int cy, int cw, int ch, string styleMode, int followMs) {
-    int targetPid = Process.GetCurrentProcess().Id;
     WinEventProc procObj = null;
     IntPtr hook = IntPtr.Zero;
     Form f = null;
@@ -288,12 +357,14 @@ public class W6 {
       int childDpi = SafeDpi(target);
       int hostDpi = SafeDpi(owner);
       double scale = (double)childDpi / hostDpi;
-
       IntPtr ownerRef = owner;
+
       WinEventProc proc = (h, ev, hw, idO, idC, dwt, t) => {
         try {
           if (hw == ownerRef) {
-            Reposition(target, ownerRef, cx, cy, cw, ch, scale, styleMode, true);
+            if (IsIconic(ownerRef)) return IntPtr.Zero;             // 主窗口最小化 → 不动（Owned 原生自动隐藏）
+            if (OwnerOffscreen(ownerRef)) return IntPtr.Zero;      // 主窗口离屏(-32000) → 不动
+            if (IsWindowVisible(target)) Reposition(target, ownerRef, cx, cy, cw, ch, scale, styleMode, true);
           }
         } catch {}
         return IntPtr.Zero;
@@ -305,11 +376,9 @@ public class W6 {
       f.Hide();
       timer = new System.Threading.Timer((state) => {
         try {
-          if (!IsWindow(ownerRef) || !IsWindow(target)) { f.Close(); return; }
-          // 位置跟随：owner move/resize 时，若目标当前可见则重定位（覆盖拖拽丢帧）。
-          // 最小化/还原的可见性交给 Owned 原生机制（owner 最小化→owned 自动隐藏，还原→自动回来），
-          // 这里不手动 SW_HIDE，否则还原时 Owned 无法把客户端带回来。
-          if (IsWindowVisible(target)) Reposition(target, ownerRef, cx, cy, cw, ch, scale, styleMode, true);
+          if (!IsWindow(ownerRef) || !IsWindow(target)) { f.Close(); return; }  // 目标/主窗口已关闭 → watcher 自行退出
+          if (!GuardedReposition(target, ownerRef, cx, cy, cw, ch, scale, styleMode)) return;
+          // owner 从最小化还原的瞬间：本 tick 的 GuardedReposition 已立即校正（skipNow 变 false 的当个 tick 就定位，不等下一轮）
         } catch {}
       }, null, 200, followMs);
       Application.Run(f);
@@ -319,9 +388,8 @@ public class W6 {
       try { if (timer != null) timer.Dispose(); } catch {}
       try { if (hook != IntPtr.Zero) UnhookWinEvent(hook); } catch {}
     }
-    return targetPid;
+    return 0;
   }
-  [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr h);
 }
 '@
 if ("W6" -as [type]) {
@@ -330,54 +398,60 @@ if ("W6" -as [type]) {
   Add-Type -TypeDefinition $w6cs -ReferencedAssemblies 'System.Windows.Forms','System' -ErrorAction Stop
 }
 
-# ---------------------------------------------------------------- list
+# ---------------------------------------------------------------- list（带候选明细 + Pick + 理由）
 if ($Action -eq "list") {
   $wins = [W6]::Find($ProcessName, $TitleKeyword)
-  $sum = ($wins | ForEach-Object { ('{0:X8}' -f $_.hwnd) + " (" + $_.w + "x" + $_.h + ") '" + $_.title + "'" } ) -join '; '
-  Log ("LIST: " + $ProcessName + " found=" + $wins.Count + " " + $sum)
-  @{ ok = $true; processName = $ProcessName; windows = $wins | ForEach-Object {
-      [PSCustomObject]@{ hwnd=$_.hwnd; pid=$_.pid; title=$_.title; className=$_.className; w=$_.w; h=$_.h; isMinimized=$_.isMinimized; isCollapsed=$_.isCollapsed; isVisible=$_.isVisible }
-    } } | ConvertTo-Json -Compress -Depth 5
+  $pick = [W6]::Pick($wins)
+  $cand = @($wins | Where-Object { $_.isCandidate })
+  $excl = @($wins | Where-Object { -not $_.isCandidate })
+  $candSum = ($cand | ForEach-Object { "hwnd=" + $_.hwnd + " " + $_.className + " '" + $_.title + "' " + $_.w + "x" + $_.h + " vis=" + $_.isVisible + " rank=" + $_.priority }) -join '; '
+  $exclSum = ($excl | ForEach-Object { "hwnd=" + $_.hwnd + " '" + $_.title + "' " + $_.className + " excluded=" + $_.excludedReason }) -join '; '
+  if ($pick) {
+    Log ("LIST: " + $ProcessName + " found=" + $wins.Count + " CANDIDATES=[" + $candSum + "] EXCLUDED=[" + $exclSum + "] ==> PICK=" + $pick.hwnd + " reason=" + $pick.pickReason)
+  } else {
+    Log ("LIST: " + $ProcessName + " found=" + $wins.Count + " NO_CANDIDATE (excluded=[" + $exclSum + "])")
+  }
+  @{ ok = $true; processName = $ProcessName;
+     windows = ($wins | ForEach-Object {
+       [PSCustomObject]@{ hwnd=$_.hwnd; pid=$_.pid; title=$_.title; className=$_.className; w=$_.w; h=$_.h;
+         isMinimized=$_.isMinimized; isCollapsed=$_.isCollapsed; isVisible=$_.isVisible;
+         isCandidate=$_.isCandidate; excludedReason=$_.excludedReason; zIndex=$_.zIndex } })
+     candidates = ($cand | ForEach-Object { [PSCustomObject]@{ hwnd=$_.hwnd; title=$_.title; className=$_.className; w=$_.w; h=$_.h; rank=$_.priority; classRank=$_.classRank; zIndex=$_.zIndex } })
+     pickHwnd = $(if ($pick) { $pick.hwnd } else { 0 })
+     pickReason = $(if ($pick) { $pick.pickReason } else { "NO_CANDIDATE: " + $exclSum })
+   } | ConvertTo-Json -Compress -Depth 6
   exit 0
 }
 
-# 解析目标窗口（embed/watch/hide/show/reposition 都需要）
+# 解析目标窗口：显式 TargetHwnd 优先；否则走新 Pick
 function Resolve-Target {
   if ($script:TargetHwnd -gt 0) { return [IntPtr]$script:TargetHwnd }
   $w = [W6]::Find($script:ProcessName, $script:TitleKeyword)
-  if ($w.Count -eq 0) { return [IntPtr]0 }
-  return [IntPtr]$w[0].hwnd
-}
-
-# 选择窗口（过滤噪声）
-function Pick-Target {
-  $w = [W6]::Find($script:ProcessName, $script:TitleKeyword)
-  foreach ($x in $w) {
-    if ($x.hwnd -and ($x.className -notmatch 'IME|GDI|MSCTFIME|Static') -and ($x.w -gt 30) -and ($x.h -gt 20)) { return $x }
-  }
-  return $null
+  $p = [W6]::Pick($w)
+  if ($p) { return [IntPtr]$p.hwnd }
+  return [IntPtr]0
 }
 
 # ---------------------------------------------------------------- embed (Owned 接管)
 if ($Action -eq "embed") {
   $child = Resolve-Target
   if ($child.ToInt64() -le 0) {
-    Log "EMBED: no window found"
-    @{ ok=$false; error=("未检测到「"+$ProcessName+"」客户端窗口，请先打开并登录该客户端") } | ConvertTo-Json -Compress; exit 0
+    Log "EMBED: no candidate window (全部被硬过滤排除)"
+    @{ ok=$false; error=("「"+$ProcessName+"」未找到可用窗口（可能被隐藏或尚未登录）。请先显示该窗口，再点「重新扫描」。") } | ConvertTo-Json -Compress; exit 0
   }
   $res = [W6]::DoEmbedOwned($child, [IntPtr]$ParentHwnd, $X, $Y, $Width, $Height, $StyleMode)
-  Log ("EMBED(owned): " + ($res["steps"] -join ' | ') + " ==> 结论 STYLE_STRATEGY=" + $res["styleStrategy"] + " DPI_SCALE=" + $res["dpiScale"])
+  Log ("EMBED(owned): target=" + $child + " " + ($res["steps"] -join ' | ') + " ==> 结论 STYLE_STRATEGY=" + $res["styleStrategy"] + " DPI_SCALE=" + $res["dpiScale"])
   $out = @{ ok=$true }
   foreach ($k in $res.Keys) { $out[$k] = $res[$k] }
   $out | ConvertTo-Json -Compress -Depth 5
   exit 0
 }
 
-# ---------------------------------------------------------------- watch (常驻跟随)
+# ---------------------------------------------------------------- watch (常驻跟随，带守卫)
 if ($Action -eq "watch") {
   $child = Resolve-Target
   if ($child.ToInt64() -le 0) { Log "WATCH: no target"; @{ ok=$false } | ConvertTo-Json -Compress; exit 0 }
-  Log ("WATCH: start for target=" + $child + " owner=" + $ParentHwnd + " every " + $FollowMs + "ms, style=" + $StyleMode)
+  Log ("WATCH: start for target=" + $child + " owner=" + $ParentHwnd + " every " + $FollowMs + "ms, style=" + $StyleMode + " (guard: owner-iconic/offscreen skip, target-dead exit)")
   [W6]::RunWatcher($child, [IntPtr]$ParentHwnd, $X, $Y, $Width, $Height, $StyleMode, $FollowMs) | Out-Null
   exit 0
 }
@@ -400,7 +474,7 @@ if ($Action -eq "show") {
   @{ ok=$true } | ConvertTo-Json -Compress; exit 0
 }
 
-# ---------------------------------------------------------------- reposition (一次性校正，供 focus 置顶用)
+# ---------------------------------------------------------------- reposition (一次性校正)
 if ($Action -eq "reposition") {
   if ($TargetHwnd -gt 0 -and $ParentHwnd -gt 0) {
     [W6]::DoLightShow([IntPtr]$TargetHwnd, [IntPtr]$ParentHwnd, $X, $Y, $Width, $Height, $StyleMode) | Out-Null
@@ -427,14 +501,11 @@ if ($Action -eq "detach" -or $Action -eq "detach-all") {
   $n = 0
   foreach ($h in $targets) {
     if ($h.ToInt64() -le 0) { continue }
-    # 清掉 owner 关系
     [W6]::SetWindowLongPtr($h, [W6]::GWLP_HWNDPARENT, [IntPtr]::Zero) | Out-Null
-    # 恢复 exstyle（去 TOOLWINDOW、加回 APPWINDOW）
     $ex64 = [W6]::GetWindowLongPtr($h, [W6]::GWL_EXSTYLE).ToInt64()
     $ex = [int]$ex64
     $ex = ($ex -band (-bnot [W6]::WS_EX_TOOLWINDOW)) -bor [W6]::WS_EX_APPWINDOW
     [W6]::SetWindowLongPtr($h, [W6]::GWL_EXSTYLE, [IntPtr][int64]$ex) | Out-Null
-    # 恢复边框（若之前去掉了）
     $st64 = [W6]::GetWindowLongPtr($h, [W6]::GWL_STYLE).ToInt64()
     $st = [int]$st64
     $st = $st -band (-bnot [W6]::WS_CHILD)

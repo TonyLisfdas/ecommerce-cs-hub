@@ -297,8 +297,8 @@
     if (!plat || !plat.win32ProcessName) { _win32EmbeddingLock[shop.id] = false; return; }
 
     // ★ 只接管一次：已完整接管过的（内存或缓存有效），只做 SW_SHOW + 跟随定位，绝不重复接管
-    if (!force && _win32TakenOver[shop.id]) {
-      const cached = win32CachedHwnd(shop);
+    if (!force) {
+      const cached = win32CachedHwnd(shop); // 内存 或 localStorage（重启后仍在，跳过扫描与接管）
       if (cached) {
         // 重启后内存 _win32TakenOver 丢失，但 localStorage 缓存还在 → 先用 IsWindow 校验有效性
         let valid = true;
@@ -310,6 +310,7 @@
           win32SaveHwndCache();
         } else {
           win32EmbeddedHwnd[shop.id] = cached;
+          _win32TakenOver[shop.id] = true; // 复用成功，恢复标记
           const fr2 = document.getElementById('win32frame_' + shop.id);
           const rect2 = fr2 ? fr2.getBoundingClientRect() : { left: 0, top: 92, width: 1280, height: 760 };
           await window.csElectronAPI.win32Embed({
@@ -351,8 +352,11 @@
       !/IME|GDI|MSCTFIME|Static/i.test(w.className || '') &&
       (Number(w.w) || 0) > 30 && (Number(w.h) || 0) > 20
     ) || null;
-    const target = pick(wins);
-    const hwnd = target ? (Number(target.hwnd) || 0) : 0;
+    // Fix 12: 选取交给 PowerShell 侧权威 pickHwnd（硬过滤: 不可见/空标题/尺寸<200/类名黑名单含Chrome_WidgetWin_0/标题黑名单加载中等
+    // + 关键词优先级 接待中心>客服工作台>千帆>eva>旺旺 > 类名Win_1 > 面积 > z-order）。pickHwnd=0 → 无候选 → 下方提示卡
+    const psPick = Number(res && res.pickHwnd) || 0;
+    const target = psPick > 0 ? { hwnd: psPick, title: plat.win32ProcessName, isCollapsed: false } : null;
+    const hwnd = psPick > 0 ? psPick : 0;
     if (!target || !hwnd) {
       // 进程在跑但没有可嵌入的接待窗口（比如千牛停在登录页）→ 提示卡
       const frame2 = document.getElementById('win32frame_' + shop.id);

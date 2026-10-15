@@ -44,10 +44,42 @@ function killWin32Watcher(targetHwnd) {
   delete win32Watchers[key];
 }
 
+// ==== Fix 14: watcher 单实例保障（杜绝进程堆积） ====
+// 按命令行里的 -TargetHwnd <值> 匹配并杀掉【未注册在 win32Watchers 里的孤儿 watcher 进程】
+function killOrphanWin32WatchersByTarget(targetHwnd) {
+  const re = 'win32-embed.*-TargetHwnd ' + Number(targetHwnd) + '(\\s|$)';
+  try {
+    execFile('powershell.exe', [
+      '-NoProfile', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -match '" + re + "' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    ], { timeout: 8000 }, () => {});
+  } catch (e) {}
+}
+
+// 杀掉所有 win32-embed watcher（用于：启动时清理上一实例遗留孤儿 + before-quit 兜底）
+function killOrphanWin32WatchersAll() {
+  try {
+    execFile('powershell.exe', [
+      '-NoProfile', '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -match 'win32-embed' -and $_.CommandLine -match 'watch' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    ], { timeout: 8000 }, () => {});
+  } catch (e) {}
+}
+
 function spawnWin32Watcher(opts) {
   const targetHwnd = opts.targetHwnd;
   if (!targetHwnd) return null;
   killWin32Watcher(targetHwnd);
+  // Fix 14: 先按命令行杀掉同 TargetHwnd 的孤儿 watcher（未注册的遗留进程）
+  killOrphanWin32WatchersByTarget(targetHwnd);
+  // Fix 14: 同一平台（processName）最多 1 个 watcher → 全局最多 2 个（淘宝 + 小红书）
+  const _pn = opts.processName || 'AliWorkbench';
+  Object.keys(win32Watchers).forEach((k) => {
+    const _w = win32Watchers[k];
+    if (_w && Number(_w.targetHwnd) !== Number(targetHwnd) && (_w.processName || 'AliWorkbench') === _pn) {
+      killWin32Watcher(Number(_w.targetHwnd));
+    }
+  });
   const scriptPath = path.join(__dirname, 'scripts', 'win32-embed.ps1');
   const args = [
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
@@ -490,6 +522,7 @@ function applyWeixinCookiePersist(partitionName) {
 // ============================================================================
 app.on('before-quit', () => {
   Object.keys(win32Watchers).forEach((k) => killWin32Watcher(k));
+  killOrphanWin32WatchersAll(); // Fix 14: 再按命令行兜底杀掉所有 win32-embed watcher
   ['AliWorkbench', '千帆客服工作台', 'WeChat', 'JMWorkbench', 'PddWorkbench'].forEach((pn) => {
     try {
       execFile('powershell.exe', [
@@ -520,6 +553,7 @@ if (!gotSingleInstanceLock) {
 }
 
 app.whenReady().then(() => {
+  killOrphanWin32WatchersAll(); // Fix 14: 启动时先清理上一实例遗留的孤儿 watcher 进程
   createMainWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
