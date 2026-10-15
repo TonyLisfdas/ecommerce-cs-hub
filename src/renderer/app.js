@@ -316,6 +316,7 @@
     _win32TakenOver[shop.id] = false;
     delete win32EmbeddedHwnd[shop.id];
     win32SaveHwndCache();
+    _win32EmbeddingLock[shop.id] = false; // 修复19d: 强制接管前先清锁，避免上一次 embed 未释放导致早退
     win32AutoEmbed(shop, true); // 强制完整接管
   }
 
@@ -326,6 +327,7 @@
     _win32EmbeddingLock[shop.id] = true;
     _win32Pending[shop.id] = true;
     setTimeout(() => { _win32Pending[shop.id] = false; }, 800);
+    try { // 修复19d: 接管体包 try/finally，finally 兜底释放锁
     const plat = platformMap[shop.platformId];
     if (!plat || !plat.win32ProcessName) { _win32EmbeddingLock[shop.id] = false; return; }
 
@@ -446,6 +448,9 @@
       if (card) card.remove();
     }
     _win32EmbeddingLock[shop.id] = false;
+    } finally {
+      _win32EmbeddingLock[shop.id] = false; // 修复19d: 兜底释放锁，避免 IPC 异常/早退导致永久卡死
+    }
   }
 
   function win32Hide(shop) {

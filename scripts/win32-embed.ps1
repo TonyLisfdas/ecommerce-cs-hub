@@ -375,13 +375,14 @@ public class W6 {
     RECT r; GetWindowRect(hwnd, out r); int w = r.R - r.L, h = r.B - r.T;
     bool sizeOk = w >= 200 && h >= 200;
     int ttl = GetWindowTextLength(hwnd); bool titleOk = ttl > 0;
-    bool reuse = alive && vis && procOk && clsOk && !clsBlack && sizeOk && titleOk;
+    // 修复18b: 不要求 visible（切走时 SW_HIDE 会误丢缓存）；陈旧假窗由 clsBlack+clsOk+proc+size+title 挡
     d["hwnd"] = hwnd.ToInt64();
     d["process"] = pnm;
     d["className"] = cls;
     d["size"] = w + "x" + h;
     d["checks"] = "IsWindow=" + alive + " IsWindowVisible=" + vis + " proc=" + (procOk ? "OK" : "FAIL")
       + " class=" + (clsOk ? "OK" : "FAIL") + " black=" + clsBlack + " size=" + (sizeOk ? "OK" : "FAIL") + " title=" + (titleOk ? "OK" : "FAIL");
+    bool reuse = alive && procOk && clsOk && !clsBlack && sizeOk && titleOk; // 修复18b: 不要求 visible (陈旧假窗由 clsBlack+clsOk+proc+size+title 挡)
     d["reuse"] = reuse;
     return d;
   }
@@ -536,14 +537,15 @@ if ($Action -eq "hide") {
 
 # ---------------------------------------------------------------- show (修复17：显示+重绑owner+定位，不重新接管)
 if ($Action -eq "show") {
-  if ($TargetHwnd -gt 0 -and $ParentHwnd -gt 0) {
+  $rebound = ($TargetHwnd -gt 0 -and $ParentHwnd -gt 0)
+  if ($rebound) {
     [W6]::DoLightShow([IntPtr]$TargetHwnd, [IntPtr]$ParentHwnd, $X, $Y, $Width, $Height, $StyleMode) | Out-Null
     Log ("SHOW target=" + $TargetHwnd + " owner=" + $ParentHwnd + " (rebound=是) light-show+rebind-owner+reposition")
   } elseif ($TargetHwnd -gt 0) {
     [W6]::ShowWindow([IntPtr]$TargetHwnd, [W6]::SW_SHOW) | Out-Null
     Log ("SHOW target=" + $TargetHwnd + " SW_SHOW only (no owner)")
   }
-  @{ ok=$true } | ConvertTo-Json -Compress; exit 0
+  @{ ok=$true; targetHwnd=$TargetHwnd; owner=$ParentHwnd; rebound=$rebound } | ConvertTo-Json -Compress; exit 0
 }
 
 # ---------------------------------------------------------------- reposition (一次性校正)
