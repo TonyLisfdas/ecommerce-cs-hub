@@ -150,9 +150,12 @@ public class W6 {
           priority = 9, classRank = 1, zIndex = zidx++
         };
         // ---- 第一道硬过滤（命中即丢弃，记录原因） ----
-        if (!info.isVisible) { info.excludedReason = "invisible"; list.Add(info); return true; }
+        // 修复24: 最小化窗口尺寸会塌缩(~199x34 / 挪到-32000)且 IsWindowVisible=False，
+        // 用 WS_MINIMIZE 样式/IsIconic 识别；业务窗放行（embed 时黑屏兜底还原），非业务的小窗仍按 too-small 排除
+        bool isMin = info.isMinimized || IsIconic(h);
+        if (!info.isVisible && !isMin) { info.excludedReason = "invisible"; list.Add(info); return true; }
         if (string.IsNullOrEmpty(title)) { info.excludedReason = "empty-title"; list.Add(info); return true; }
-        if (w < 200 || ht < 200) { info.excludedReason = "too-small"; list.Add(info); return true; }
+        if ((w < 200 || ht < 200) && !isMin) { info.excludedReason = "too-small"; list.Add(info); return true; }
         if (cn.IndexOf("MSCTFIME", StringComparison.OrdinalIgnoreCase) >= 0
             || cn.IndexOf("IME", StringComparison.OrdinalIgnoreCase) >= 0
             || cn.IndexOf("GDI", StringComparison.OrdinalIgnoreCase) >= 0
@@ -251,12 +254,25 @@ public class W6 {
   }
 
   // 守卫式重定位（修复13）：owner 最小化/离屏 → 跳过；目标可见才动
+  // ---------- 修复21: 目标被隐藏/最小化时先还原（show/embed 前置） ----------
+  public static int RestoreHidden(IntPtr child) {
+    if (child.ToInt64() <= 0) return 0;
+    int did = 0;
+    if (!IsWindow(child)) return 0;
+    if (IsIconic(child)) { ShowWindow(child, SW_RESTORE); Thread.Sleep(120); did += 1; }
+    if (!IsWindowVisible(child)) { ShowWindow(child, SW_SHOW); did += 1; }
+    if (did > 0) Thread.Sleep(120); // 等窗口真正上屏，尺寸就位
+    return did;
+  }
+
   public static bool GuardedReposition(IntPtr target, IntPtr owner, int cx, int cy, int cw, int ch, double scale, string styleMode) {
     if (!IsWindow(target)) return false;
     if (owner.ToInt64() > 0) {
       if (IsIconic(owner)) return false;      // owner 最小化 → 不重定位（Owned 原生会自动隐藏）
       if (OwnerOffscreen(owner)) return false; // owner 离屏(-32000) → 不重定位
     }
+    // 修复24: 目标自己被最小化（如客户端误触最小化）→ watcher 帮它还原，嵌入窗必须跟随主窗可见
+    if (IsIconic(target)) { ShowWindow(target, SW_RESTORE); Thread.Sleep(60); }
     if (IsWindowVisible(target)) Reposition(target, owner, cx, cy, cw, ch, scale, styleMode, true);
     return true;
   }
@@ -264,6 +280,7 @@ public class W6 {
   // ---------- Owned Top-Level 接管（embed） ----------
   public static Dictionary<string, object> DoEmbedOwned(IntPtr child, IntPtr owner, int cx, int cy, int cw, int ch, string styleMode) {
     var log = new List<string>();
+    { int _rh = RestoreHidden(child); if (_rh > 0) log.Add("restore-hidden=" + _rh); } // 修复21: 隐藏/最小化先还原
     int childDpi = SafeDpi(child);
     int hostDpi = SafeDpi(owner);
     double scale = (double)childDpi / hostDpi;
@@ -347,6 +364,7 @@ public class W6 {
     int hostDpi = SafeDpi(owner);
     double scale = (double)childDpi / hostDpi;
     if (owner.ToInt64() > 0) SetWindowLongPtr(child, GWLP_HWNDPARENT, owner); // ★ 修复17 重绑 owner（幂等）
+    RestoreHidden(child); // 修复21: 最小化/隐藏先还原，保证 Reposition 时尺寸有效
     ShowWindow(child, SW_SHOW);
     int[] rr = Reposition(child, owner, cx, cy, cw, ch, scale, styleMode, true); // SetWindowPos(HWND_TOP,...)
     return rr;
@@ -373,7 +391,8 @@ public class W6 {
       || cls.IndexOf("GDI", StringComparison.OrdinalIgnoreCase) >= 0
       || cls.IndexOf("tooltips_class32", StringComparison.OrdinalIgnoreCase) >= 0) clsBlack = true;
     RECT r; GetWindowRect(hwnd, out r); int w = r.R - r.L, h = r.B - r.T;
-    bool sizeOk = w >= 200 && h >= 200;
+    bool minNow = IsIconic(hwnd);
+    bool sizeOk = (w >= 200 && h >= 200) || minNow; // 修复24: 最小化时尺寸塌缩≠假窗，show 会 RestoreHidden 还原
     int ttl = GetWindowTextLength(hwnd); bool titleOk = ttl > 0;
     // 修复18b: 不要求 visible（切走时 SW_HIDE 会误丢缓存）；陈旧假窗由 clsBlack+clsOk+proc+size+title 挡
     d["hwnd"] = hwnd.ToInt64();
@@ -401,8 +420,10 @@ public class W6 {
         if (!pidSet.Contains(p2)) return true;
         RECT rr; GetWindowRect(h, out rr);
         int w = rr.R - rr.L, ht = rr.B - rr.T;
-        if (w < 200 || ht < 200) return true;
-        if (IsWindowVisible(h)) return true;  // 已可见不救
+        // 修复24: 最小化业务窗尺寸塌缩，也要救（SW_RESTORE 还原即恢复原尺寸）
+        bool minNow = IsIconic(h);
+        if ((w < 200 || ht < 200) && !minNow) return true;
+        if (IsWindowVisible(h) && !minNow) return true;  // 可见且非最小化 → 不用救
         var t = new StringBuilder(300); GetWindowText(h, t, 300); string title = t.ToString();
         bool biz = title.IndexOf("接待", StringComparison.OrdinalIgnoreCase) >= 0
           || title.IndexOf("客服", StringComparison.OrdinalIgnoreCase) >= 0
@@ -475,6 +496,14 @@ if ("W6" -as [type]) {
 if ($Action -eq "list") {
   $wins = [W6]::Find($ProcessName, $TitleKeyword)
   $pick = [W6]::Pick($wins)
+  # 修复22: 无候选 → 可能是接待窗口被隐藏/最小化（上次 detach 或用户最小化），自动 rescue 一次再重扫
+  if (-not $pick) {
+    $rescued = [W6]::Rescue($ProcessName)
+    if ($rescued.Count -gt 0) { Log ("LIST-AUTORESCUE: " + $ProcessName + " rescued=" + ($rescued -join ",") + " re-scanning"); Start-Sleep -Milliseconds 400
+      $wins = [W6]::Find($ProcessName, $TitleKeyword)
+      $pick = [W6]::Pick($wins)
+    }
+  }
   $cand = @($wins | Where-Object { $_.isCandidate })
   $excl = @($wins | Where-Object { -not $_.isCandidate })
   $candSum = ($cand | ForEach-Object { "hwnd=" + $_.hwnd + " " + $_.className + " '" + $_.title + "' " + $_.w + "x" + $_.h + " vis=" + $_.isVisible + " rank=" + $_.priority }) -join '; '

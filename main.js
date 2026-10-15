@@ -46,12 +46,13 @@ function killWin32Watcher(targetHwnd) {
 
 // ==== Fix 14: watcher 单实例保障（杜绝进程堆积） ====
 // 按命令行里的 -TargetHwnd <值> 匹配并杀掉【未注册在 win32Watchers 里的孤儿 watcher 进程】
-function killOrphanWin32WatchersByTarget(targetHwnd) {
+function killOrphanWin32WatchersByTarget(targetHwnd, excludePid) {
   const re = 'win32-embed.*-TargetHwnd ' + Number(targetHwnd) + '(\\s|$)';
+  const exGuard = Number(excludePid) ? " -and $_.ProcessId -ne " + Number(excludePid) : ""; // 修复25: 排除刚 spawn 的自身
   try {
     execFile('powershell.exe', [
       '-NoProfile', '-Command',
-      "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -match '" + re + "' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+      "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -match '" + re + "'" + exGuard + " } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
     ], { timeout: 8000 }, () => {});
   } catch (e) {}
 }
@@ -69,9 +70,10 @@ function killOrphanWin32WatchersAll() {
 function spawnWin32Watcher(opts) {
   const targetHwnd = opts.targetHwnd;
   if (!targetHwnd) return null;
-  killWin32Watcher(targetHwnd);
-  // Fix 14: 先按命令行杀掉同 TargetHwnd 的孤儿 watcher（未注册的遗留进程）
-  killOrphanWin32WatchersByTarget(targetHwnd);
+  killWin32Watcher(targetHwnd); // 杀已登记的旧 watcher（进程+登记）
+  // 修复25: 不再在 spawn 前异步清孤儿 —— 旧版清道夫 1-3s 后落地时会按 -TargetHwnd 匹配，
+  //         把刚 spawn、命令行里同样带 -TargetHwnd 的新 watcher 一起杀掉（出生即死）。
+  //         改为 spawn 登记后带"排除自身 pid"的清扫（见下方 killOrphanWin32WatchersByTarget(targetHwnd, proc.pid)）。
   // Fix 14: 同一平台（processName）最多 1 个 watcher → 全局最多 2 个（淘宝 + 小红书）
   const _pn = opts.processName || 'AliWorkbench';
   Object.keys(win32Watchers).forEach((k) => {
@@ -102,6 +104,13 @@ function spawnWin32Watcher(opts) {
     x: opts.x || 0, y: opts.y || 92, w: opts.w || 1280, h: opts.h || 760,
     processName: opts.processName || 'AliWorkbench', titleKeyword: opts.titleKeyword || '接待中心'
   };
+  // 修复25: spawn 之后才清同 TargetHwnd 孤儿，且排除自身 pid（杜绝清道夫误杀新 watcher 的竞态）
+  killOrphanWin32WatchersByTarget(targetHwnd, proc && proc.pid ? proc.pid : 0);
+  // 修复20+25: 进程退出时保留 spec（仅标记 _dead），moved/resize/show 可据此原地重生（带新 owner）
+  proc.on('exit', () => {
+    const rec = win32Watchers[String(targetHwnd)];
+    if (rec && rec.proc === proc) rec._dead = true;
+  });
   return proc;
 }
 
@@ -318,24 +327,40 @@ function createMainWindow() {
     mainWindow.flashFrame(false);
   });
 
-  // 主窗口 resize → 按新内容尺寸重建 win32 跟随 watcher + 通知渲染进程（500ms debounce）
+  // 共享：把已接管的客服窗按当前主窗内容区重新定位 + 重生存活 watcher + 通知渲染进程对齐
+  function refreshWin32Follow(opts) {
+    const o = opts || {};
+    const force = !!o.force;        // force=true: 全量重建（尺寸变化，坐标必须刷新）
+    const notify = o.notify !== false;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const cw = mainWindow.getContentSize()[0];
+      const ch = mainWindow.getContentSize()[1];
+      const ownerHwnd = getMainOwnerHwnd();
+      Object.values(win32Watchers).forEach((w) => {
+        // 修复25: 存活 watcher 靠 WinEventHook+60ms 轮询实时跟随 —— 拖拽时杀它再拉（PowerShell 冷启动 2s）只会卡
+        const alive = w.proc && !w.proc.killed && w.proc.exitCode === null && !w._dead;
+        if (!force && alive) return; // 只补活死的，不动活的
+        spawnWin32Watcher({
+          targetHwnd: w.targetHwnd, ownerHwnd, x: w.x, y: w.y, w: cw, h: ch,
+          styleMode: w.styleMode, processName: w.processName, titleKeyword: w.titleKeyword
+        });
+      });
+      if (notify) mainWindow.webContents.send('cs-window-resized', { width: cw, height: ch });
+    }
+  }
+
+  // 主窗口 resize → 按新内容尺寸重建跟随（500ms debounce）
   let _resizeTimer = null;
   mainWindow.on('resize', () => {
     if (_resizeTimer) clearTimeout(_resizeTimer);
-    _resizeTimer = setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        const cw = mainWindow.getContentSize()[0];
-        const ch = mainWindow.getContentSize()[1];
-        const ownerHwnd = getMainOwnerHwnd();
-        Object.values(win32Watchers).forEach((w) => {
-          spawnWin32Watcher({
-            targetHwnd: w.targetHwnd, ownerHwnd, x: w.x, y: w.y, w: cw, h: ch,
-            styleMode: w.styleMode, processName: w.processName, titleKeyword: w.titleKeyword
-          });
-        });
-        mainWindow.webContents.send('cs-window-resized', { width: cw, height: ch });
-      }
-    }, 500);
+    _resizeTimer = setTimeout(() => { refreshWin32Follow({ force: true, notify: true }); }, 500); // 尺寸变→全量重建+通知渲染对齐
+  });
+
+  // 修复23: 主窗口移动(拖动边框) → 让嵌入的客服窗跟到新坐标（150ms debounce，比 resize 更紧）
+  let _moveTimer = null;
+  mainWindow.on('moved', () => {
+    if (_moveTimer) clearTimeout(_moveTimer);
+    _moveTimer = setTimeout(() => { refreshWin32Follow({ force: false, notify: false }); }, 150); // 修复23: 拖拽只补活 watcher，活着的靠 WinEventHook 实时跟
   });
 }
 
@@ -442,7 +467,10 @@ ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeywo
   // Owned Top-Level 实时跟随：接管(embed)后重建 watcher；show 时若已有 watcher 则保持常驻不动（稳定）
   if (result && result.ok && targetHwnd) {
     const key = String(Number(targetHwnd));
-    if (action === 'embed' || !win32Watchers[key]) {
+    // 修复20+25: 存活探测 —— 已登记但进程已死/_dead 标记 视为缺失，强制重生
+    const _rec = win32Watchers[key];
+    const _live = _rec && _rec.proc && !_rec.proc.killed && _rec.proc.exitCode === null && !_rec._dead;
+    if (action === 'embed' || !_live) {
       spawnWin32Watcher({
         targetHwnd: Number(targetHwnd),
         ownerHwnd: ownerHwnd,
