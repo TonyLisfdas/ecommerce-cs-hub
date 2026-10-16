@@ -234,6 +234,7 @@ ipcMain.handle('cs-get-initial-data', async () => {
   return {
     platforms: PLATFORMS,
     state,
+    watcherPreloadPath: 'file://' + path.join(__dirname, 'preload-watcher.js').replace(/\\/g, '/'),
     isWindows: process.platform === 'win32'
   };
 });
