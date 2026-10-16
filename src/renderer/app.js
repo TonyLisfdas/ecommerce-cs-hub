@@ -180,6 +180,7 @@
       document.body.appendChild(gh);
     }
     bindToolbarEvents();
+    bindCopyUrlButton(); // v14: 复制当前网址按钮
     bindOrderDashboardEvents(); // v11 Phase D/E 订单仪表盘 + 新订单提醒
     setTimeout(fitWebviews, 300); // v12: 启动完成后首次像素校正
 
@@ -1274,8 +1275,16 @@
     renderOrderDashboard();
   }
 
+  // v14: 新订单提醒冷却时间（毫秒）。同一个店铺在这个时间内只提醒一次，
+  //      避免网页上的「待发货」数字抖动导致反复弹窗 + 反复响铃。想改就改这个数字。
+  const ORDER_ALERT_COOLDOWN_MS = 60000;
+  const orderAlertLastAt = {};
   function maybeTriggerOrderAlert(shopId, newCount) {
     if (appState.orderAlertEnabled === false) return;
+    // v14: 冷却判断 —— 距上次提醒不足 ORDER_ALERT_COOLDOWN_MS 就静默跳过
+    const __now14 = Date.now();
+    if (orderAlertLastAt[shopId] && (__now14 - orderAlertLastAt[shopId]) < ORDER_ALERT_COOLDOWN_MS) return;
+    orderAlertLastAt[shopId] = __now14;
     const shop = appState.shops.find((s) => s.id === shopId);
     if (!shop) return;
     const plat = platformMap[shop.platformId] || platforms[0];
@@ -1388,5 +1397,54 @@
     const floatBtn = document.getElementById('orderDashFloatBtn');
     if (floatBtn) floatBtn.addEventListener('click', () => toggleOrderDashboard(true));
   }
+  // ===========================================================================
+  // v14: 「📋 复制当前网址」—— 一键复制当前正在查看的客服页 / 订单页网址
+  // ===========================================================================
+  function copyCurrentUrl() {
+    const shop = getActiveShop();
+    if (!shop) return;
+    const host = document.querySelector("#pane_" + shop.id + " .subtab-pane.active");
+    const wv = host ? host.querySelector("webview") : null;
+    const url = (wv && typeof wv.getURL === "function") ? (wv.getURL() || "") : "";
+    if (!url) { showCopyUrlToast("当前没有可复制的网址（页面可能还没加载完）", "#64748b"); return; }
+    const done = copyTextToClipboard(url);
+    showCopyUrlToast(done ? ("已复制网址：\n" + url) : ("复制失败，请手动记下：\n" + url), done ? "#10b981" : "#f97316");
+  }
+
+  function copyTextToClipboard(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text); return true; }
+    } catch (e) { /* 走下面的兜底方案 */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const okc = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return okc;
+    } catch (e) { return false; }
+  }
+
+  function showCopyUrlToast(msg, color) {
+    const stack = document.getElementById("toastStack");
+    const text = String(msg || "");
+    if (!stack) { console.log("[复制网址] " + text); return; }
+    const el = document.createElement("div");
+    el.className = "incoming-toast";
+    el.style.borderLeftColor = color || "#38bdf8";
+    el.style.cursor = "default";
+    el.innerHTML = '<div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap;word-break:break-all;">' + escapeHtml(text) + '</div>';
+    stack.appendChild(el);
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 5000);
+  }
+
+  function bindCopyUrlButton() {
+    const btn = document.getElementById("btnCopyCurrentUrl");
+    if (btn) btn.addEventListener("click", copyCurrentUrl);
+  }
+
   window.addEventListener('DOMContentLoaded', initApp);
 })();
