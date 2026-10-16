@@ -154,8 +154,6 @@
     populateAddShopPlatformSelect();
     renderAllTabs();
     renderAllShopPanes();
-    renderQuickReplies();
-    await win32PruneCacheOnStartup(); // 修复19: 启动清理失效缓存（逐条校验）
     switchToShopTab(appState.activeShopId || appState.shops[0]?.id);
     // ★ 创建拖拽指示器 DOM（竖线 #tabDropIndicator + ghost #tabDragGhost）
     if (!document.getElementById('tabDropIndicator')) {
@@ -170,13 +168,6 @@
     }
     bindToolbarEvents();
 
-    // 主窗口 resize 时重新对齐 win32 嵌入窗口
-    if (isElectron && window.csElectronAPI.onWindowResized) {
-      window.csElectronAPI.onWindowResized(({ width, height }) => {
-        const active = getActiveShop();
-        if (active && win32EmbeddedHwnd[active.id]) win32Reembed(active);
-      });
-    }
   }
 
   function persistState() {
@@ -259,289 +250,6 @@
     appState.shops.forEach((s, i2) => { s.order = i2; });
     renderAllTabs();
     persistState();
-  }
-
-  // ★ Win32 原生嵌入状态 + 自动 嵌入/隐藏/还原
-  const win32EmbeddedHwnd = {};      // shop.id -> hwnd（内存，本次会话）
-  const _win32Pending = {};          // 防抖
-  const _win32EmbeddingLock = {};    // shop.id -> true，正在接管中（单飞，杜绝冷启动并发竞争）
-  const _win32TakenOver = {};        // shop.id -> true，已完整接管过（之后只 show/hide + 跟随，绝不重复 SetWindowLongPtr）
-  const WIN32_HWND_CACHE_KEY = 'cs_hub_win32_hwnd_cache_v1';
-  const win32Fingerprint = {}; // shop.id -> {hwnd, procName, className, title, w, h}（修复18 指纹）
-  function win32NormEntry(v) { return (v && typeof v === 'object' && v.hwnd) ? v : { hwnd: v }; }
-  function win32ReadHwndCache() {
-    try { const raw = localStorage.getItem(WIN32_HWND_CACHE_KEY); const o = raw ? JSON.parse(raw) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
-  }
-  function win32SaveHwndCache() {
-    try {
-      const cache = {};
-      Object.keys(win32EmbeddedHwnd).forEach((sid) => {
-        cache[sid] = win32Fingerprint[sid] || { hwnd: win32EmbeddedHwnd[sid] }; // 存指纹对象（含 className 等）
-      });
-      localStorage.setItem(WIN32_HWND_CACHE_KEY, JSON.stringify(cache));
-    } catch (e) {}
-  }
-  function win32CachedHwnd(shop) {
-    if (win32EmbeddedHwnd[shop.id]) return win32EmbeddedHwnd[shop.id];
-    const e = win32ReadHwndCache()[shop.id];
-    return e ? win32NormEntry(e).hwnd : 0;
-  }
-  function win32CachedInfo(shop) {
-    if (win32EmbeddedHwnd[shop.id] && win32Fingerprint[shop.id]) return win32Fingerprint[shop.id];
-    const e = win32ReadHwndCache()[shop.id];
-    return e ? win32NormEntry(e) : { hwnd: 0 };
-  }
-  // 修复19: 启动清理失效缓存（逐条跑修复18 校验，不过即删）
-  async function win32PruneCacheOnStartup() {
-    if (!isElectron || !window.csElectronAPI.win32Embed) return;
-    try {
-      const cache = win32ReadHwndCache();
-      for (const sid of Object.keys(cache)) {
-        const shopObj = (appState.shops || []).find((x) => x.id === sid);
-        const plat = shopObj ? platformMap[shopObj.platformId] : null;
-        const info = win32NormEntry(cache[sid]);
-        if (!plat || !plat.win32ProcessName || !info.hwnd) { delete cache[sid]; continue; }
-        const chk = await window.csElectronAPI.win32Embed({
-          action: 'validatecache', targetHwnd: info.hwnd,
-          processName: plat.win32ProcessName, expectClass: info.className || ''
-        });
-        if (!(chk && chk.reuse)) delete cache[sid];
-      }
-      localStorage.setItem(WIN32_HWND_CACHE_KEY, JSON.stringify(cache));
-    } catch (e) {}
-  }
-
-  // 重新接管（强制完整接管流程，用于“重新接管”按钮 / 渲染异常时重置）
-  function win32ForceRetakeover(shop) {
-    _win32TakenOver[shop.id] = false;
-    delete win32EmbeddedHwnd[shop.id];
-    win32SaveHwndCache();
-    _win32EmbeddingLock[shop.id] = false; // 修复19d: 强制接管前先清锁，避免上一次 embed 未释放导致早退
-    win32AutoEmbed(shop, true); // 强制完整接管
-  }
-
-  async function win32AutoEmbed(shop, force) {
-    if (!isElectron || !window.csElectronAPI.win32Embed) return;
-    // 单飞锁：正在接管就直接返回，杜绝冷启动并发竞争
-    if (_win32EmbeddingLock[shop.id]) return;
-    _win32EmbeddingLock[shop.id] = true;
-    _win32Pending[shop.id] = true;
-    setTimeout(() => { _win32Pending[shop.id] = false; }, 800);
-    try { // 修复19d: 接管体包 try/finally，finally 兜底释放锁
-    const plat = platformMap[shop.platformId];
-    if (!plat || !plat.win32ProcessName) { _win32EmbeddingLock[shop.id] = false; return; }
-
-    // ★ 只接管一次：已完整接管过的（内存或缓存有效），只做 SW_SHOW + 跟随定位，绝不重复接管
-    if (!force) {
-      const cached = win32CachedHwnd(shop); // 内存 或 localStorage（重启后仍在，跳过扫描与接管）
-      if (cached) {
-        // 修复18: 缓存指纹校验（进程名/类名/可见/尺寸/标题），不能只验 IsWindow
-        const info = win32CachedInfo(shop);
-        let valid = false;
-        try {
-          const chk = await window.csElectronAPI.win32Embed({
-            action: 'validatecache', targetHwnd: cached,
-            processName: plat.win32ProcessName,
-            titleKeyword: (plat.win32TitleKeywords && plat.win32TitleKeywords[0]) || '客服',
-            expectClass: info.className || ''
-          });
-          valid = !!(chk && chk.reuse);
-        } catch (e) { valid = true; } // 校验调用失败 → 保守走 show（会重绑 owner+定位）
-        if (!valid) {
-          // 缓存指纹不符（如陈旧 132590）→ 丢弃，落到下方完整 list+embed 重选
-          _win32TakenOver[shop.id] = false;
-          delete win32EmbeddedHwnd[shop.id];
-          delete win32Fingerprint[shop.id];
-          const _c = win32ReadHwndCache(); delete _c[shop.id];
-          try { localStorage.setItem(WIN32_HWND_CACHE_KEY, JSON.stringify(_c)); } catch (e) {}
-          win32SaveHwndCache();
-        } else {
-          win32EmbeddedHwnd[shop.id] = cached;
-          _win32TakenOver[shop.id] = true; // 复用成功，恢复标记
-          const fr2 = document.getElementById('win32frame_' + shop.id);
-          const rect2 = fr2 ? fr2.getBoundingClientRect() : { left: 0, top: 92, width: 1280, height: 760 };
-          await window.csElectronAPI.win32Embed({
-            action: 'show', targetHwnd: cached,
-            processName: plat.win32ProcessName,
-            titleKeyword: (plat.win32TitleKeywords && plat.win32TitleKeywords[0]) || '客服',
-            bounds: { x: Math.round(rect2.left), y: Math.round(rect2.top), width: Math.round(rect2.width), height: Math.round(rect2.height) },
-            styleMode: 'auto'
-          });
-          const ctl2 = document.getElementById('win32ctl_' + shop.id);
-          if (ctl2) { const st2 = ctl2.querySelector('.win32-status'); if (st2) st2.textContent = '✅ 已接管（跟随中，点击/键盘可用）'; }
-          _win32EmbeddingLock[shop.id] = false;
-          return;
-        }
-      }
-    }
-
-    // 首次 / 强制 / 缓存失效 → 完整接管（list 扫描 + embed 接管 + 启动跟随）
-    const res = await window.csElectronAPI.win32Embed({
-      action: 'list', processName: plat.win32ProcessName,
-      titleKeyword: (plat.win32TitleKeywords && plat.win32TitleKeywords[0]) || '客服'
-    });
-    // PowerShell ConvertTo-Json 会把单元素数组塌缩成对象，这里统一规范化成数组
-    let rawWins = (res && res.windows !== undefined) ? res.windows : res;
-    let wins = Array.isArray(rawWins) ? rawWins : ((rawWins && rawWins.hwnd !== undefined) ? [rawWins] : []);
-    const frame = document.getElementById('win32frame_' + shop.id);
-    if (!wins.length || !wins[0]) {
-      // 友好提示卡片（客户端未运行）
-      if (frame) frame.innerHTML = renderWin32NoClientCard(shop, plat);
-      const _st0 = document.querySelector('#win32ctl_' + shop.id + ' .win32-status');
-      if (_st0) _st0.textContent = '⚠️ 未检测到客户端（可点「重新扫描」重试）';
-      _win32Pending[shop.id] = false;
-      _win32EmbeddingLock[shop.id] = false; // 未接管成功，释放单飞锁
-      return;
-    }
-    // 过滤 IME/GDI/0x0 噪声窗口，取第一个"有意义"的（list 已按标题优先级排序：接待中心>客服>千帆>旺旺）
-    const pick = (arr) => (arr || []).find((w) =>
-      w && w.hwnd &&
-      !/IME|GDI|MSCTFIME|Static/i.test(w.className || '') &&
-      (Number(w.w) || 0) > 30 && (Number(w.h) || 0) > 20
-    ) || null;
-    // Fix 12: 选取交给 PowerShell 侧权威 pickHwnd（硬过滤: 不可见/空标题/尺寸<200/类名黑名单含Chrome_WidgetWin_0/标题黑名单加载中等
-    // + 关键词优先级 接待中心>客服工作台>千帆>eva>旺旺 > 类名Win_1 > 面积 > z-order）。pickHwnd=0 → 无候选 → 下方提示卡
-    const psPick = Number(res && res.pickHwnd) || 0;
-    const target = psPick > 0 ? { hwnd: psPick, title: plat.win32ProcessName, isCollapsed: false } : null;
-    const hwnd = psPick > 0 ? psPick : 0;
-    if (!target || !hwnd) {
-      // 进程在跑但没有可嵌入的接待窗口（比如千牛停在登录页）→ 提示卡
-      const frame2 = document.getElementById('win32frame_' + shop.id);
-      if (frame2) frame2.innerHTML = renderWin32NoClientCard(shop, plat, 'no-reception-window');
-      const _st1 = document.querySelector('#win32ctl_' + shop.id + ' .win32-status');
-      if (_st1) _st1.textContent = '⚠️ 客户端在运行但未发现接待窗口（请先登录并打开接待窗口）';
-      _win32Pending[shop.id] = false;
-      _win32EmbeddingLock[shop.id] = false; // 未接管成功，释放单飞锁
-      return;
-    }
-    win32EmbeddedHwnd[shop.id] = hwnd;
-    // 修复18: 记录指纹（进程/类名/标题/尺寸），写入缓存供重启后校验复用
-    {
-      const _cands = (res && (res.candidates || res.windows)) || [];
-      const _pinfo = _cands.find((c) => c && Number(c.hwnd) === hwnd) || null;
-      win32Fingerprint[shop.id] = {
-        hwnd: hwnd, procName: plat.win32ProcessName,
-        className: _pinfo ? (_pinfo.className || '') : '',
-        title: target ? (target.title || '') : '',
-        w: _pinfo ? (Number(_pinfo.w) || 0) : 0, h: _pinfo ? (Number(_pinfo.h) || 0) : 0
-      };
-    }
-    _win32TakenOver[shop.id] = true;   // ★ 首次接管成功，打“已接管”标记
-    win32SaveHwndCache();              // ★ 持久化 {shop.id: hwnd}，重启后可复用
-    const rect = frame ? frame.getBoundingClientRect() : { left: 0, top: 92, width: 1280, height: 760 };
-    await window.csElectronAPI.win32Embed({
-      action: 'embed', targetHwnd: hwnd,
-      processName: plat.win32ProcessName,
-      titleKeyword: (plat.win32TitleKeywords && plat.win32TitleKeywords[0]) || '客服',
-      bounds: { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) },
-      styleMode: 'auto'
-    });
-    // 更新控制条状态
-    const ctl = document.getElementById('win32ctl_' + shop.id);
-    if (ctl) {
-      const st = ctl.querySelector('.win32-status');
-      if (st) st.innerHTML = '✅ 已接管「' + escapeHtml(target.title || plat.win32ProcessName) + '」（Owned 顶层窗口，点击/键盘可用）' + (target.isCollapsed ? '（折叠态已自动展开）' : '');
-    }
-    // 清理友好提示卡
-    if (frame) {
-      const card = frame.querySelector('.win32-no-client');
-      if (card) card.remove();
-    }
-    _win32EmbeddingLock[shop.id] = false;
-    } finally {
-      _win32EmbeddingLock[shop.id] = false; // 修复19d: 兜底释放锁，避免 IPC 异常/早退导致永久卡死
-    }
-  }
-
-  function win32Hide(shop) {
-    if (!isElectron || !win32EmbeddedHwnd[shop.id]) return;
-    const hwnd = win32EmbeddedHwnd[shop.id];
-    const plat = platformMap[shop.platformId];
-    window.csElectronAPI.win32Embed({
-      action: 'hide', targetHwnd: hwnd,
-      processName: plat ? plat.win32ProcessName : 'AliWorkbench'
-    });
-    // 持久化：HWND 缓存保留（_win32TakenOver 不清），下次切回只 show+定位，不重新扫描/接管
-  }
-
-  async function win32Reembed(shop) {
-    if (!isElectron || !win32EmbeddedHwnd[shop.id]) return;
-    const hwnd = win32EmbeddedHwnd[shop.id];
-    const plat = platformMap[shop.platformId];
-    const fr = document.getElementById('win32frame_' + shop.id);
-    const rect = fr ? fr.getBoundingClientRect() : { left: 0, top: 92, width: 1280, height: 760 };
-    await window.csElectronAPI.win32Embed({
-      action: 'show', targetHwnd: hwnd,
-      processName: plat ? plat.win32ProcessName : 'AliWorkbench',
-      bounds: { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) }
-    });
-  }
-
-  function renderWin32NoClientCard(shop, plat, hint) {
-    const isXhs = plat.id === 'xiaohongshu';
-    const dlUrl = isXhs ? 'https://walle.xiaohongshu.com/client-update/' : '';
-    const tip = isXhs ? '小红书千帆客服工作台' : '千牛客户端（接待中心）';
-    const title2 = hint === 'no-reception-window' ? '客户端已运行，但未发现「接待」窗口' : '未检测到「' + escapeHtml(plat.win32ProcessName || '') + '」客户端窗口';
-    return '<div class="win32-no-client">'
-      + '<div class="win32-no-client-icon">🖥️</div>'
-      + '<div class="win32-no-client-title">' + (hint === 'no-reception-window' ? '客户端已运行，但未发现接待窗口' : '未检测到「' + escapeHtml(plat.win32ProcessName || '') + '」客户端窗口') + '</div>'
-      + '<div class="win32-no-client-desc">' + (hint === 'no-reception-window' ? '请先在' + escapeHtml(tip) + '里完成登录并打开接待窗口，然后点「重新扫描」。' : '请先在电脑上打开并登录' + escapeHtml(tip) + '，然后点「重新扫描」。') + '</div>'
-      + (dlUrl ? '<a href="' + dlUrl + '" target="_blank" class="win32-no-client-btn">⬇ 去官网下载</a>' : '')
-      + '<button class="win32-no-client-btn" id="win32rescan_' + shop.id + '">🔄 重新扫描</button>'
-      + '</div>';
-  }
-
-  async function renderWin32Control(shop, plat, ctl) {
-    if (!ctl) return;
-    ctl.innerHTML = `<div class='win32-ctl-bar'>
-      <span class='win32-ctl-title'>🖥️ ${escapeHtml(plat.fullName || plat.shortName || '')}</span>
-      <span class='win32-status'>⏳ 正在扫描...</span>
-      <button data-act='retakeover' class='win32-btn'>↻ 重新接管</button>
-      <button data-act='detach' class='win32-btn'>↗ 弹出还原</button>
-    </div>`;
-    // 重新扫描按钮
-    const _rescanBtn = ctl.querySelector(".win32-btn[data-act=rescan]");
-    if (_rescanBtn) {
-      _rescanBtn.addEventListener('click', () => {
-        const st = ctl.querySelector('.win32-status');
-        if (st) st.textContent = '⏳ 正在重新扫描...';
-        win32ForceRetakeover(shop); // 重新扫描=强制完整接管
-      });
-    }
-    const _retakeBtn = ctl.querySelector(".win32-btn[data-act=retakeover]");
-    if (_retakeBtn) {
-      _retakeBtn.addEventListener('click', () => {
-        const st = ctl.querySelector('.win32-status');
-        if (st) st.textContent = '⏳ 正在重新接管...';
-        win32ForceRetakeover(shop);
-      });
-    }
-    // 弹出还原按钮
-    const _detachBtn = ctl.querySelector(".win32-btn[data-act=detach]");
-    if (_detachBtn) {
-      _detachBtn.addEventListener('click', async () => {
-        if (win32EmbeddedHwnd[shop.id]) {
-          await window.csElectronAPI.win32Embed({
-            action: 'detach', targetHwnd: win32EmbeddedHwnd[shop.id],
-            processName: plat.win32ProcessName
-          });
-          delete win32EmbeddedHwnd[shop.id];
-          showIncomingToast(shop, plat, '已弹出独立窗口', '原生客服窗口已还原为桌面独立窗口');
-        }
-      });
-    }
-    // 面板内"重新扫描"按钮（友好提示卡片里的那个）
-    const _rescanInFrame = document.getElementById('win32rescan_' + shop.id);
-    if (_rescanInFrame) {
-      _rescanInFrame.addEventListener('click', () => win32AutoEmbed(shop));
-    }
-    // 仅当前激活标签立即 embed；非激活标签占位（切到本页时再 embed，避免启动时多标签并发触发 PowerShell 竞争）
-    if (shop.id === (appState && appState.activeShopId)) {
-      await win32AutoEmbed(shop);
-    } else {
-      const _stPh = ctl.querySelector('.win32-status');
-      if (_stPh) _stPh.textContent = '切到本页自动嵌入';
-    }
   }
 
   // ★ 轻量原地更新标签页状态（不清空 innerHTML、不重建 DOM 节点）
@@ -745,21 +453,7 @@
 
     if (isElectron) {
       const srcUrl = shop.customUrl || plat.url;
-      const isWin32Mode = typeof srcUrl === 'string' && srcUrl.indexOf('win32://') === 0; // 淘宝+小红书走 Win32 原生嵌入
-
-      if (isWin32Mode) {
-        // Windows 原生客服窗口内嵌：控制条 + 原生窗口挂载区（不放 webview，避免 win32:// 无效 URL 白屏）
-        const ctl = document.createElement('div');
-        ctl.id = `win32ctl_${shop.id}`;
-        ctl.className = 'win32-embed-control';
-        pane.appendChild(ctl);
-        const frame = document.createElement('div');
-        frame.id = `win32frame_${shop.id}`;
-        frame.className = 'win32-embed-frame';
-        frame.innerHTML = '<div class="win32-frame-hint">🖥️ Windows 原生客服窗口将嵌入此区域<br>请在上方控制条选择要内嵌的窗口（千牛接待中心 / 微信 / 咚咚）</div>';
-        pane.appendChild(frame);
-        renderWin32Control(shop, plat, ctl);
-      } else {
+      // v11: 移除 Win32 原生嵌入，统一用 <webview> 加载官方网页（淘宝/小红书 指向订单页）
       // 在 Windows Electron 客户端下直接创建真实持久化隔离的 <webview>
       const webview = document.createElement('webview');
       webview.id = `webview_${shop.id}`;
@@ -813,7 +507,6 @@
       });
 
       pane.appendChild(webview);
-      } // end else (webview 模式)
     } else {
       // 在浏览器在线预览环境中，渲染高保真 1:1 原版客服工作台交互仿真器
       renderSimulatedWorkbench(pane, shop);
@@ -1050,14 +743,6 @@
     const shop = appState.shops.find((s) => s.id === shopId) || appState.shops[0];
     if (!shop) return;
 
-    // 切走前隐藏当前 win32 嵌入窗口（避免挡住新标签页）
-    if (isElectron) {
-      const prevActive = appState.shops.find((s) => s.id === appState.activeShopId);
-      if (prevActive && prevActive.id !== shopId && typeof win32Hide === 'function') {
-        win32Hide(prevActive);
-      }
-    }
-
     appState.activeShopId = shop.id;
     const rt = runtimeShops[shop.id];
     if (rt) {
@@ -1077,10 +762,6 @@
     updateTabBadgesInPlace();
     persistState();
 
-    // 切过来后自动嵌入 win32 窗口
-    if (isElectron && shop.customUrl && shop.customUrl.indexOf('win32://') === 0 && typeof win32AutoEmbed === 'function') {
-      win32AutoEmbed(shop);
-    }
   }
 
   function updateToolbarForActiveShop(shop) {
@@ -1089,7 +770,6 @@
     const shopLabelEl = document.getElementById('currentShopLabel');
     const partLabelEl = document.getElementById('currentPartitionLabel');
     const urlSelectEl = document.getElementById('urlEntrySelect');
-    const cleanBtn = document.getElementById('btnToggleCleanMode');
 
     badgeEl.style.background = plat.color;
     badgeEl.textContent = plat.iconText;
@@ -1105,15 +785,6 @@
       if (u.url === (shop.customUrl || plat.url)) opt.selected = true;
       urlSelectEl.appendChild(opt);
     });
-
-    // 更新纯净客服模式按钮状态
-    if (shop.cleanMode) {
-      cleanBtn.classList.add('btn-active-green');
-      cleanBtn.innerHTML = '<span>✨ 纯净客服模式: 已开启(无后台)</span>';
-    } else {
-      cleanBtn.classList.remove('btn-active-green');
-      cleanBtn.innerHTML = '<span>🏢 纯净客服模式: 已关闭(显示后台)</span>';
-    }
   }
 
   // ============================================================================
@@ -1274,31 +945,6 @@
       }
     });
 
-    // 切换「纯净客服模式（隐藏商家后台菜单）」
-    document.getElementById('btnToggleCleanMode').addEventListener('click', () => {
-      const shop = getActiveShop();
-      if (!shop) return;
-      const plat = platformMap[shop.platformId];
-      shop.cleanMode = !shop.cleanMode;
-      updateToolbarForActiveShop(shop);
-      persistState();
-
-      if (isElectron) {
-        const wv = document.getElementById(`webview_${shop.id}`);
-        if (wv) {
-          wv.send('cs-toggle-clean-mode', {
-            enabled: shop.cleanMode,
-            cleanCss: plat.cleanCss
-          });
-        }
-      } else {
-        const simWb = document.getElementById(`sim_wb_${shop.id}`);
-        if (simWb) {
-          simWb.classList.toggle('clean-mode-on', shop.cleanMode);
-        }
-      }
-    });
-
     // 打开「保存账密 / 自动登录设置」弹窗
     document.getElementById('btnOpenVault').addEventListener('click', () => {
       const shop = getActiveShop();
@@ -1387,14 +1033,6 @@
 
     document.getElementById('btnTestSound').addEventListener('click', () => {
       playAlertChime(toneSelect.value);
-    });
-
-    // 快捷话术栏开关
-    const qrBtn = document.getElementById('btnToggleQuickReply');
-    const qrDrawer = document.getElementById('quickReplyDrawer');
-    qrBtn.addEventListener('click', () => {
-      const isHidden = qrDrawer.classList.toggle('hidden');
-      qrBtn.classList.toggle('btn-active-green', !isHidden);
     });
 
     // ★ 标签栏滚轮横向滚动（上下滚轮 -> 左右滑动）
@@ -1519,38 +1157,6 @@
       opt.value = p.id;
       opt.textContent = `${p.name} (${p.url})`;
       sel.appendChild(opt);
-    });
-  }
-
-  function renderQuickReplies() {
-    const listEl = document.getElementById('quickReplyList');
-    listEl.innerHTML = '';
-    (appState.quickReplies || []).forEach((qr) => {
-      const item = document.createElement('div');
-      item.className = 'qr-item';
-      item.innerHTML = `
-        <div class="qr-item-top">
-          <span class="qr-title">${escapeHtml(qr.title)}</span>
-          <span class="qr-cat">${escapeHtml(qr.category)}</span>
-        </div>
-        <div class="qr-text">${escapeHtml(qr.text)}</div>
-      `;
-      item.addEventListener('click', () => {
-        const shop = getActiveShop();
-        if (!shop) return;
-        // 复制到剪贴板并填入当前聊天输入框
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(qr.text).catch(() => {});
-        }
-        const inputEl = document.getElementById(`composer_input_${shop.id}`);
-        if (inputEl) {
-          inputEl.value = qr.text;
-          inputEl.focus();
-        }
-        const plat = platformMap[shop.platformId] || platforms[0];
-        showIncomingToast(shop, plat, '💬 快捷话术已填入并复制', qr.text);
-      });
-      listEl.appendChild(item);
     });
   }
 

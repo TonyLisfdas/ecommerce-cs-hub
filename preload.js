@@ -1,5 +1,6 @@
 ﻿/**
  * preload.js - 主界面渲染进程与 Electron 主进程通信桥
+ * v11: 移除 win32Embed 原生嵌入桥；新增订单提醒桥
  */
 const { contextBridge, ipcRenderer } = require('electron');
 
@@ -9,11 +10,11 @@ contextBridge.exposeInMainWorld('csElectronAPI', {
   saveState: (state) => ipcRenderer.invoke('cs-save-state', state),
   clearShopSession: (partition) => ipcRenderer.invoke('cs-clear-shop-session', partition),
   triggerSystemAlert: (payload) => ipcRenderer.invoke('cs-trigger-system-alert', payload),
-  win32Embed: (payload) => ipcRenderer.invoke('cs-win32-embed', payload),
+  triggerOrderAlert: (payload) => ipcRenderer.invoke('cs-trigger-order-alert', payload),
   onFocusShopTab: (callback) => {
     ipcRenderer.on('cs-focus-shop-tab', (event, data) => callback(data));
   },
-  onWindowResized: (callback) => {
-    ipcRenderer.on('cs-window-resized', (event, data) => callback(data));
+  onFocusOrderTab: (callback) => {
+    ipcRenderer.on('cs-focus-order-tab', (event, data) => callback(data));
   }
 });

@@ -9,6 +9,8 @@
 const PLATFORMS = [
   {
     id: 'douyin',
+    hasCustomerService: true,
+    orderUrl: 'https://fxg.jinritemai.com/ffa/morder/order/list',
     name: '抖店·飞鸽',
     fullName: '抖店飞鸽客服工作台',
     shortName: '抖店',
@@ -49,6 +51,8 @@ const PLATFORMS = [
   },
   {
     id: 'pinduoduo',
+    hasCustomerService: true,
+    orderUrl: 'https://mms.pinduoduo.com/orders/order_list.html',
     name: '拼多多·多多客服',
     fullName: '拼多多网页版客服工作台',
     shortName: '拼多多',
@@ -90,7 +94,9 @@ const PLATFORMS = [
   },
   {
     id: 'taobao',
-    name: '淘宝·千牛接待',
+    hasCustomerService: false, // v11: 客服已删，仅保留订单
+    orderUrl: 'https://trade.taobao.com/trade/itemlist/list_sold_items.htm',
+    name: '淘宝·卖家中心',
     fullName: '淘宝/天猫千牛客服接待中心',
     shortName: '淘宝',
     color: '#FF5000',
@@ -98,9 +104,8 @@ const PLATFORMS = [
     iconText: '淘',
     badgeColor: '#FF5000',
     // 淘宝实时接待仅千牛客户端支持 → 主入口走 Windows 原生窗口嵌入「接待中心」
-    url: 'win32://AliWorkbench/接待中心',
+    url: 'https://trade.taobao.com/trade/itemlist/list_sold_items.htm', // v11: 淘宝主入口=订单(已卖出的宝贝)
     backupUrls: [
-      { label: '★ Windows原生嵌入：抓取本地千牛【接待中心】聊天窗口（推荐）', url: 'win32://AliWorkbench/接待中心' },
       { label: '淘宝旺旺单聊窗 (market.m.taobao.com)', url: 'https://market.m.taobao.com/app/im/chat/index.html' },
       { label: '千牛网页版卖家工作台 (myseller.taobao.com)', url: 'https://myseller.taobao.com/home.htm' }
     ],
@@ -131,6 +136,8 @@ const PLATFORMS = [
   },
   {
     id: 'weixin',
+    hasCustomerService: true,
+    orderUrl: 'https://store.weixin.qq.com/shop/order',
     name: '微信小店·客服',
     fullName: '微信小店 / 视频号小店客服工作台',
     shortName: '微信',
@@ -144,7 +151,6 @@ const PLATFORMS = [
       { label: '微信小店网页客服 (store.weixin.qq.com/shop/kf)', url: 'https://store.weixin.qq.com/shop/kf' },
       { label: '腾讯微信客服网页版 (kf.weixin.qq.com)', url: 'https://kf.weixin.qq.com/' },
       { label: '视频号小店客服 (channels.weixin.qq.com/shop/kf)', url: 'https://channels.weixin.qq.com/shop/kf' },
-      { label: '★ Windows原生嵌入：抓取本地【PC微信客户端】窗口（勾选电脑微信自动登录即可免扫码）', url: 'win32://WeChat/微信' }
     ],
     supportWin32Embed: true,
     win32ProcessName: 'WeChat',
@@ -173,6 +179,8 @@ const PLATFORMS = [
   },
   {
     id: 'kuaishou',
+    hasCustomerService: true,
+    orderUrl: 'https://s.kwaixiaodian.com/zone/order/order-list',
     name: '快手·小店客服',
     fullName: '快手小店客服IM工作台',
     shortName: '快手',
@@ -210,7 +218,9 @@ const PLATFORMS = [
   },
   {
     id: 'xiaohongshu',
-    name: '小红书·千帆客服',
+    hasCustomerService: false, // v11: 客服已删，仅保留订单
+    orderUrl: 'https://qianfan.xiaohongshu.com/shop/order',
+    name: '小红书·订单',
     fullName: '小红书千帆客服工作台',
     shortName: '小红书',
     color: '#FF2442',
@@ -218,9 +228,8 @@ const PLATFORMS = [
     iconText: '红',
     badgeColor: '#FF2442',
     // 小红书官方限制浏览器实时接待 → 主入口走 Windows 原生嵌入「千帆客服工作台」客户端
-    url: 'win32://千帆客服工作台/客服',
+    url: 'https://qianfan.xiaohongshu.com/shop/order', // v11: 小红书主入口=订单
     backupUrls: [
-      { label: '★ Windows原生嵌入：抓取本地「千帆客服工作台」客户端窗口（推荐）', url: 'win32://千帆客服工作台/客服' },
       { label: '千帆客服数据页 (app-cs/gold-cs)', url: 'https://ark.xiaohongshu.com/app-cs/gold-cs' },
       { label: '千帆历史聊天记录查询 (cs-data/chat-manage)', url: 'https://ark.xiaohongshu.com/app-cs/cs-data/chat-manage' }
     ],
@@ -251,6 +260,8 @@ const PLATFORMS = [
   },
   {
     id: 'jd',
+    hasCustomerService: true,
+    orderUrl: 'https://shop.jd.com/oms/order-manage',
     name: '京东·咚咚客服',
     fullName: '京东咚咚商家网页版客服工作台',
     shortName: '京东',
@@ -290,6 +301,9 @@ const PLATFORMS = [
   },
   {
     id: 'xianyu',
+    hasCustomerService: true,
+    orderUrl: '', // 闲鱼无商家订单后台 → 仪表盘标「暂不支持」
+    orderUnsupported: true,
     name: '闲鱼·网页版IM',
     fullName: '闲鱼官方网页版消息接待中心',
     shortName: '闲鱼',

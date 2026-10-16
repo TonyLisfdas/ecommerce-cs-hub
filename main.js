@@ -1,118 +1,25 @@
 /**
  * main.js - 聚客宝·八大电商平台聚合客服工作台 (Electron 主进程)
+ * v11: 移除 Win32 原生窗口嵌入（千牛/千帆 客户端嵌入），保留 8 平台网页版客服 + 订单
  * 核心能力：
  * 1. 多店铺独立 Session 沙箱隔离（persist:shop_{shopId}），同一平台可同时登录多家店铺互不串号
- * 2. 账密本地 AES-256-GCM 加密持久化存储，配合 preload-watcher.js 实现自动填充登录
+ * 2. 账密本地 AES-256-GCM 加密持久化存储，配合 preload.js 实现自动填充登录
  * 3. 请求头净化（移除 X-Frame-Options / CSP frame-ancestors 限制）与标准 Chrome UA 伪装
- * 4. 收到新消息时：Windows 任务栏高亮闪烁 (flashFrame) + 系统右下角通知（点击直达对应店铺标签页）
- * 5. Windows 原生窗口内嵌桥接（Owned Top-Level 方案：把本地千牛「接待中心」/千帆接待窗接入标签页，
- *    窗口保持独立顶层、保留自身消息循环，鼠标键盘 100% 正常；SetWinEventHook+60ms 轮询实时跟随）
+ * 4. 收到新消息时：Windows 任务栏高亮闪烁 (flashFrame) + 系统右下角通知
+ * 5. 订单提醒：各平台待发货数字变化 → 声音 + 弹窗「XX平台有新订单」
  */
 
 const { app, BrowserWindow, ipcMain, session, Notification, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { execFile, spawn } = require('child_process');
 const { PLATFORMS } = require('./src/platforms');
 
 const CHROME_USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML and Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 let mainWindow = null;
 const configuredPartitions = new Set();
-
-// ============================================================================
-// Win32 跟随 watcher（Owned Top-Level 实时跟随：SetWinEventHook + 60ms 轮询兜底）
-// 每个被接管的客户端窗口对应一个常驻 PowerShell watcher 进程；
-// 切标签 hide/show 不动它（稳定常驻），主窗口 resize 时按新内容尺寸重建。
-// ============================================================================
-const win32Watchers = {}; // String(targetHwnd) -> { proc, targetHwnd, styleMode, x,y,w,h, processName, titleKeyword }
-
-function getMainOwnerHwnd() {
-  if (!mainWindow || mainWindow.isDestroyed()) return 0;
-  try {
-    const buf = mainWindow.getNativeWindowHandle();
-    return Number(buf.length >= 8 ? buf.readBigInt64LE(0) : buf.readInt32LE(0));
-  } catch (e) { return 0; }
-}
-
-function killWin32Watcher(targetHwnd) {
-  const key = String(targetHwnd);
-  const w = win32Watchers[key];
-  if (w && w.proc) { try { w.proc.kill(); } catch (e) {} }
-  delete win32Watchers[key];
-}
-
-// ==== Fix 14: watcher 单实例保障（杜绝进程堆积） ====
-// 按命令行里的 -TargetHwnd <值> 匹配并杀掉【未注册在 win32Watchers 里的孤儿 watcher 进程】
-function killOrphanWin32WatchersByTarget(targetHwnd, excludePid) {
-  const re = 'win32-embed.*-TargetHwnd ' + Number(targetHwnd) + '(\\s|$)';
-  const exGuard = Number(excludePid) ? " -and $_.ProcessId -ne " + Number(excludePid) : ""; // 修复25: 排除刚 spawn 的自身
-  try {
-    execFile('powershell.exe', [
-      '-NoProfile', '-Command',
-      "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -match '" + re + "'" + exGuard + " } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-    ], { timeout: 8000 }, () => {});
-  } catch (e) {}
-}
-
-// 杀掉所有 win32-embed watcher（用于：启动时清理上一实例遗留孤儿 + before-quit 兜底）
-function killOrphanWin32WatchersAll() {
-  try {
-    execFile('powershell.exe', [
-      '-NoProfile', '-Command',
-      "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | Where-Object { $_.CommandLine -match 'win32-embed' -and $_.CommandLine -match 'watch' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-    ], { timeout: 8000 }, () => {});
-  } catch (e) {}
-}
-
-function spawnWin32Watcher(opts) {
-  const targetHwnd = opts.targetHwnd;
-  if (!targetHwnd) return null;
-  killWin32Watcher(targetHwnd); // 杀已登记的旧 watcher（进程+登记）
-  // 修复25: 不再在 spawn 前异步清孤儿 —— 旧版清道夫 1-3s 后落地时会按 -TargetHwnd 匹配，
-  //         把刚 spawn、命令行里同样带 -TargetHwnd 的新 watcher 一起杀掉（出生即死）。
-  //         改为 spawn 登记后带"排除自身 pid"的清扫（见下方 killOrphanWin32WatchersByTarget(targetHwnd, proc.pid)）。
-  // Fix 14: 同一平台（processName）最多 1 个 watcher → 全局最多 2 个（淘宝 + 小红书）
-  const _pn = opts.processName || 'AliWorkbench';
-  Object.keys(win32Watchers).forEach((k) => {
-    const _w = win32Watchers[k];
-    if (_w && Number(_w.targetHwnd) !== Number(targetHwnd) && (_w.processName || 'AliWorkbench') === _pn) {
-      killWin32Watcher(Number(_w.targetHwnd));
-    }
-  });
-  const scriptPath = path.join(__dirname, 'scripts', 'win32-embed.ps1');
-  const args = [
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
-    '-Action', 'watch',
-    '-TargetHwnd', String(targetHwnd),
-    '-ParentHwnd', String(opts.ownerHwnd || 0),
-    '-X', String(opts.x || 0), '-Y', String(opts.y || 92),
-    '-Width', String(opts.w || 1280), '-Height', String(opts.h || 760),
-    '-StyleMode', opts.styleMode || 'auto',
-    '-ProcessName', opts.processName || 'AliWorkbench',
-    '-TitleKeyword', opts.titleKeyword || '接待中心',
-    '-FollowMs', '60'
-  ];
-  let proc = null;
-  try {
-    proc = spawn('powershell.exe', args, { stdio: 'ignore' });
-  } catch (e) { return null; }
-  win32Watchers[String(targetHwnd)] = {
-    proc, targetHwnd, styleMode: opts.styleMode || 'auto',
-    x: opts.x || 0, y: opts.y || 92, w: opts.w || 1280, h: opts.h || 760,
-    processName: opts.processName || 'AliWorkbench', titleKeyword: opts.titleKeyword || '接待中心'
-  };
-  // 修复25: spawn 之后才清同 TargetHwnd 孤儿，且排除自身 pid（杜绝清道夫误杀新 watcher 的竞态）
-  killOrphanWin32WatchersByTarget(targetHwnd, proc && proc.pid ? proc.pid : 0);
-  // 修复20+25: 进程退出时保留 spec（仅标记 _dead），moved/resize/show 可据此原地重生（带新 owner）
-  proc.on('exit', () => {
-    const rec = win32Watchers[String(targetHwnd)];
-    if (rec && rec.proc === proc) rec._dead = true;
-  });
-  return proc;
-}
 
 // ============================================================================
 // 本地加密配置与账密保险箱 (AES-256-GCM)
@@ -147,7 +54,7 @@ function decryptText(cipherPayload) {
     );
     decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
     let decrypted = decipher.update(encryptedHex, 'utf8', 'hex');
-    decrypted += decipher.final('utf8');
+    decrypted += decipher.final('hex');
     return decrypted;
   } catch (err) {
     return '';
@@ -155,14 +62,15 @@ function decryptText(cipherPayload) {
 }
 
 function getDefaultState() {
-  // 默认初始化八大电商平台各 1 个主店铺标签页（用户可随时新增同平台第2、第3家店）
   const shops = PLATFORMS.map((p, idx) => ({
     id: `shop_${p.id}_1`,
     platformId: p.id,
     shopName: `${p.shortName}·主营1店`,
     customUrl: p.url,
+    orderUrl: p.orderUrl || '',
+    hasCustomerService: p.hasCustomerService !== false, // 淘宝/小红书=false
     partition: `persist:shop_${p.id}_1`,
-    cleanMode: true,
+    cleanMode: false,
     autoFill: true,
     autoSubmit: false,
     muted: false,
@@ -176,18 +84,12 @@ function getDefaultState() {
     activeShopId: shops[0].id,
     soundSettings: {
       enabled: true,
-      tone: 'dingdong', // dingdong | crystal | urgent
+      tone: 'dingdong',
       volume: 0.85,
       flashTaskbar: true,
       desktopNotification: true
     },
-    quickReplies: [
-      { id: 'qr1', category: '发货物流', title: '当天发货承诺', text: '亲，咱们家的现货订单每天下午 16:00 前拍下都是当天安排发出的哦，一般 2-3 天左右就能收到啦~' },
-      { id: 'qr2', category: '尺码导购', title: '尺码推荐询问', text: '亲，您可以告诉我一下您的身高、体重以及平时常穿的尺码吗？我帮您精准核对一下版型哈！' },
-      { id: 'qr3', category: '改地址/核对', title: '确认修改地址', text: '收到亲！只要包裹还没被快递员揽收，我现在马上在系统里帮您登记修改收货地址，请稍等1分钟哈~' },
-      { id: 'qr4', category: '售后安抚', title: '退换货无忧', text: '亲您放心，咱们店铺支持7天无理由退换货并赠送运费险，如果有任何不合适直接申请换货/退货就可以，系统会自动理赔的！' },
-      { id: 'qr5', category: '发票开具', title: '发票开具说明', text: '好的亲！确认收货后您可以在订单详情页直接申请开具电子普票/专票，也可以直接把【发票抬头+税号+邮箱】发给我，我会帮您登记开具的！' }
-    ]
+    orderAlertEnabled: true
   };
 }
 
@@ -208,19 +110,17 @@ function loadAppState() {
 
 function hydratePasswords(state) {
   const cloned = JSON.parse(JSON.stringify(state));
-  migrateShopUrls(cloned); // 自动升级旧地址 (im.jd.com->dongdong.jd.com, air.tb.cn->work.taobao.com)
+  migrateShopUrls(cloned);
   (cloned.shops || []).forEach((s) => {
     if (!s) return;
-    s.cleanMode = false; // cleanCss 已取消，默认不再误隐藏任何按钮
-    // 淘宝 → 千牛接待中心原生嵌入
-    if (s.platformId === 'taobao') s.customUrl = 'win32://AliWorkbench/接待中心';
-    // 小红书 → 千帆客服工作台原生嵌入
-    if (s.platformId === 'xiaohongshu') s.customUrl = 'win32://千帆客服工作台/客服';
+    s.cleanMode = false; // v11: 默认纯客服
   });
   cloned.shops = (cloned.shops || []).map((shop) => ({
     ...shop,
     password: decryptText(shop.passwordEncrypted || '')
   }));
+  // 补齐新版字段（旧 vault 没有的）
+  cloned.orderAlertEnabled = cloned.orderAlertEnabled !== false;
   return cloned;
 }
 
@@ -250,7 +150,6 @@ function ensurePartitionConfigured(partitionName) {
   const ses = session.fromPartition(partitionName, { cache: true });
   ses.setUserAgent(CHROME_USER_AGENT);
 
-  // 自动授予通知、音频播放、剪贴板发图权限
   ses.setPermissionRequestHandler((webContents, permission, callback) => {
     const allowed = ['notifications', 'media', 'audioCapture', 'clipboard-read', 'clipboard-sanitized-write', 'fullscreen'];
     callback(allowed.includes(permission));
@@ -268,7 +167,6 @@ function ensurePartitionConfigured(partitionName) {
     callback({ cancel: false, responseHeaders });
   });
 
-  // 微信小店沙箱：把 Cookie 续期为 30 天，减少重复扫码
   applyWeixinCookiePersist(partitionName);
 }
 
@@ -281,7 +179,7 @@ function createMainWindow() {
     height: 920,
     minWidth: 1100,
     minHeight: 700,
-    title: '聚客宝 · 八大电商平台聚合客服工作台 (纯客服多开版)',
+    title: '聚客宝 · 八大电商平台聚合客服工作台',
     backgroundColor: '#0F172A',
     autoHideMenuBar: true,
     webPreferences: {
@@ -289,7 +187,7 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
-      backgroundThrottling: false // 关键：禁止后台标签页降频，确保8个平台WebSocket实时收消息不延迟！
+      backgroundThrottling: false // 禁止后台降频，确保 WebSocket 实时收消息
     }
   });
 
@@ -298,22 +196,22 @@ function createMainWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'src/renderer/index.html'));
 
-  // 当所有 webview 挂载时，拦截 window.open 在当前标签页或系统浏览器打开
+  // 拦截 window.open：客服/订单相关链接在 webview 内跳转，其余用系统浏览器
   app.on('web-contents-created', (event, contents) => {
     if (contents.getType() === 'webview') {
       contents.setUserAgent(CHROME_USER_AGENT);
       contents.setWindowOpenHandler(({ url }) => {
-        // 如果是客服聊天相关链接则在当前webview内跳转，商品详情或外部链接用系统浏览器打开
-        if (
-          url.includes('im.jinritemai.com') ||
-          url.includes('chat-merchant') ||
-          url.includes('im.kwaixiaodian.com') ||
-          url.includes('ark.xiaohongshu.com/app-customer') ||
-          url.includes('customer.xiaohongshu.com') ||
-          url.includes('im.jd.com') ||
-          url.includes('store.weixin.qq.com') ||
-          url.includes('goofish.com/im')
-        ) {
+        const internalPatterns = [
+          'im.jinritemai.com', 'fxg.jinritemai.com', 'chat-merchant',
+          'mms.pinduoduo.com',
+          'im.kwaixiaodian.com', 's.kwaixiaodian.com',
+          'ark.xiaohongshu.com', 'customer.xiaohongshu.com', 'qianfan.xiaohongshu.com',
+          'im.jd.com', 'dongdong.jd.com', 'shop.jd.com',
+          'store.weixin.qq.com',
+          'goofish.com',
+          'trade.taobao.com', 'myseller.taobao.com', 'market.m.taobao.com'
+        ];
+        if (internalPatterns.some((p) => url.includes(p))) {
           contents.loadURL(url);
         } else {
           shell.openExternal(url);
@@ -326,42 +224,6 @@ function createMainWindow() {
   mainWindow.on('focus', () => {
     mainWindow.flashFrame(false);
   });
-
-  // 共享：把已接管的客服窗按当前主窗内容区重新定位 + 重生存活 watcher + 通知渲染进程对齐
-  function refreshWin32Follow(opts) {
-    const o = opts || {};
-    const force = !!o.force;        // force=true: 全量重建（尺寸变化，坐标必须刷新）
-    const notify = o.notify !== false;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      const cw = mainWindow.getContentSize()[0];
-      const ch = mainWindow.getContentSize()[1];
-      const ownerHwnd = getMainOwnerHwnd();
-      Object.values(win32Watchers).forEach((w) => {
-        // 修复25: 存活 watcher 靠 WinEventHook+60ms 轮询实时跟随 —— 拖拽时杀它再拉（PowerShell 冷启动 2s）只会卡
-        const alive = w.proc && !w.proc.killed && w.proc.exitCode === null && !w._dead;
-        if (!force && alive) return; // 只补活死的，不动活的
-        spawnWin32Watcher({
-          targetHwnd: w.targetHwnd, ownerHwnd, x: w.x, y: w.y, w: cw, h: ch,
-          styleMode: w.styleMode, processName: w.processName, titleKeyword: w.titleKeyword
-        });
-      });
-      if (notify) mainWindow.webContents.send('cs-window-resized', { width: cw, height: ch });
-    }
-  }
-
-  // 主窗口 resize → 按新内容尺寸重建跟随（500ms debounce）
-  let _resizeTimer = null;
-  mainWindow.on('resize', () => {
-    if (_resizeTimer) clearTimeout(_resizeTimer);
-    _resizeTimer = setTimeout(() => { refreshWin32Follow({ force: true, notify: true }); }, 500); // 尺寸变→全量重建+通知渲染对齐
-  });
-
-  // 修复23: 主窗口移动(拖动边框) → 让嵌入的客服窗跟到新坐标（150ms debounce，比 resize 更紧）
-  let _moveTimer = null;
-  mainWindow.on('moved', () => {
-    if (_moveTimer) clearTimeout(_moveTimer);
-    _moveTimer = setTimeout(() => { refreshWin32Follow({ force: false, notify: false }); }, 150); // 修复23: 拖拽只补活 watcher，活着的靠 WinEventHook 实时跟
-  });
 }
 
 // ============================================================================
@@ -372,7 +234,6 @@ ipcMain.handle('cs-get-initial-data', async () => {
   return {
     platforms: PLATFORMS,
     state,
-    watcherPreloadPath: 'file://' + path.join(__dirname, 'preload-watcher.js').replace(/\\/g, '/'),
     isWindows: process.platform === 'win32'
   };
 });
@@ -399,7 +260,7 @@ ipcMain.handle('cs-trigger-system-alert', async (event, { shopId, shopName, plat
     const notif = new Notification({
       title: `【${platformName}】${shopName} 收到新消息`,
       body: message || '有买家发来新的咨询消息，点击立即切换接待',
-      silent: true // 声音由渲染进程合成器统一播放，避免双重系统提示音冲突
+      silent: true
     });
     notif.on('click', () => {
       if (mainWindow) {
@@ -413,88 +274,31 @@ ipcMain.handle('cs-trigger-system-alert', async (event, { shopId, shopName, plat
   return { ok: true };
 });
 
-ipcMain.handle('cs-win32-embed', async (event, { action, processName, titleKeyword, bounds, targetHwnd, styleMode, expectClass }) => {
-  if (process.platform !== 'win32') {
-    return { ok: false, error: '当前不是 Windows 系统，原生窗口嵌入仅在 Windows 10/11 上可用' };
+// 订单提醒（Phase E）：「XX平台有新订单」简单版弹窗
+ipcMain.handle('cs-trigger-order-alert', async (event, { platformName, shopName, count }) => {
+  if (mainWindow && !mainWindow.isFocused()) {
+    mainWindow.flashFrame(true);
   }
-  const scriptPath = path.join(__dirname, 'scripts', 'win32-embed.ps1');
-  const ownerHwnd = getMainOwnerHwnd();
-
-  const args = [
-    '-NoProfile',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-File',
-    scriptPath,
-    '-Action',
-    action || 'embed',
-    '-ProcessName',
-    processName || 'AliWorkbench',
-    '-TitleKeyword',
-    titleKeyword || '接待中心',
-    '-ParentHwnd',
-    String(ownerHwnd),
-    '-X',
-    String(bounds?.x || 0),
-    '-Y',
-    String(bounds?.y || 92),
-    '-Width',
-    String(bounds?.width || 1280),
-    '-Height',
-    String(bounds?.height || 760),
-    '-TargetHwnd',
-    String(targetHwnd || 0),
-    '-StyleMode',
-    styleMode || 'auto',
-    '-ExpectClass',
-    expectClass || ''
-  ];
-
-  const result = await new Promise((resolve) => {
-    execFile('powershell.exe', args, { timeout: 6000 }, (err, stdout) => {
-      if (err) {
-        resolve({ ok: false, error: err.message });
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout.trim()));
-      } catch (e) {
-        resolve({ ok: true, raw: stdout.trim() });
+  if (Notification.isSupported()) {
+    const notif = new Notification({
+      title: `【${platformName}】有新订单`,
+      body: `${shopName || '店铺'} 待发货 ${count} 单`,
+      silent: false
+    });
+    notif.on('click', () => {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+        mainWindow.webContents.send('cs-focus-order-tab', { platformName, shopName });
       }
     });
-  });
-
-  // Owned Top-Level 实时跟随：接管(embed)后重建 watcher；show 时若已有 watcher 则保持常驻不动（稳定）
-  if (result && result.ok && targetHwnd) {
-    const key = String(Number(targetHwnd));
-    // 修复20+25: 存活探测 —— 已登记但进程已死/_dead 标记 视为缺失，强制重生
-    const _rec = win32Watchers[key];
-    const _live = _rec && _rec.proc && !_rec.proc.killed && _rec.proc.exitCode === null && !_rec._dead;
-    if (action === 'embed' || !_live) {
-      spawnWin32Watcher({
-        targetHwnd: Number(targetHwnd),
-        ownerHwnd: ownerHwnd,
-        x: bounds?.x || 0,
-        y: bounds?.y || 92,
-        w: bounds?.width || 1280,
-        h: bounds?.height || 760,
-        styleMode: styleMode || 'auto',
-        processName: processName || 'AliWorkbench',
-        titleKeyword: titleKeyword || '接待中心'
-      });
-    }
+    notif.show();
   }
-  // 弹出还原(detach)时，停掉对应的跟随 watcher（窗口已交还桌面）
-  if (action === 'detach' || action === 'detach-all') {
-    if (targetHwnd) killWin32Watcher(Number(targetHwnd));
-    else Object.keys(win32Watchers).forEach((k) => killWin32Watcher(k));
-  }
-
-  return result;
+  return { ok: true };
 });
 
 // ============================================================================
-// 静默启动：屏蔽 Chromium SSL -103 日志刷屏 + 忽略证书错误（避免 -103 刷黑框）
+// 静默启动：屏蔽 Chromium SSL -103 日志刷屏
 // ============================================================================
 app.commandLine.appendSwitch('ignore-certificate-errors');
 app.commandLine.appendSwitch('log-level', '3');
@@ -504,18 +308,10 @@ app.on('certificate-error', (event, webContents, url, error, certificate, callba
 });
 
 // ============================================================================
-// 旧 vault 地址自动迁移（把已知失效/下载页 URL 升级到正确客服入口）
+// 旧 vault 地址自动迁移
 // ============================================================================
 const URL_MIGRATIONS = [
-  { from: 'im.jd.com', to: 'https://dongdong.jd.com/' },
-  // 淘宝旧URL全部 -> win32:// 千牛接待中心
-  { from: 'air.tb.cn', to: 'win32://AliWorkbench/接待中心' },
-  { from: 'work.taobao.com', to: 'win32://AliWorkbench/接待中心' },
-  { from: 'market.m.taobao.com/app/im/chat', to: 'win32://AliWorkbench/接待中心' },
-  { from: 'myseller.taobao.com', to: 'win32://AliWorkbench/接待中心' },
-  // 小红书旧URL -> win32:// 千帆客服工作台
-  { from: 'ark.xiaohongshu.com/app-customer', to: 'win32://千帆客服工作台/客服' },
-  { from: 'customer.xiaohongshu.com', to: 'win32://千帆客服工作台/客服' }
+  { from: 'im.jd.com', to: 'https://dongdong.jd.com/' }
 ];
 
 function migrateShopUrls(state) {
@@ -525,11 +321,17 @@ function migrateShopUrls(state) {
         if (shop.customUrl.includes(m.from)) shop.customUrl = m.to;
       }
     }
+    // v11: 清理旧 win32:// 地址（淘宝/小红书客服已删除，改为订单页或空）
+    if (typeof shop.customUrl === 'string' && shop.customUrl.startsWith('win32://')) {
+      if (shop.platformId === 'taobao') shop.customUrl = 'https://trade.taobao.com/trade/itemlist/list_sold_items.htm';
+      if (shop.platformId === 'xiaohongshu') shop.customUrl = 'https://qianfan.xiaohongshu.com/shop/order';
+      shop.hasCustomerService = false;
+    }
   });
   return state;
 }
 
-// 微信小店：把 Session Cookie 手动续期为 30 天持久 Cookie，减少重复扫码
+// 微信小店：把 Session Cookie 手动续期为 30 天持久 Cookie
 function applyWeixinCookiePersist(partitionName) {
   if (!partitionName || partitionName.indexOf('shop_weixin') === -1) return;
   try {
@@ -547,25 +349,7 @@ function applyWeixinCookiePersist(partitionName) {
 }
 
 // ============================================================================
-// 退出前：先停跟随 watcher，再 detach-only 还原所有被接管的原生客服窗口
-// （清 owner + 还原样式 + 桌面显示原窗口），绝不 WM_CLOSE 关掉千牛/千帆
-// ============================================================================
-app.on('before-quit', () => {
-  Object.keys(win32Watchers).forEach((k) => killWin32Watcher(k));
-  killOrphanWin32WatchersAll(); // Fix 14: 再按命令行兜底杀掉所有 win32-embed watcher
-  ['AliWorkbench', '千帆客服工作台', 'WeChat', 'JMWorkbench', 'PddWorkbench'].forEach((pn) => {
-    try {
-      execFile('powershell.exe', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(__dirname, 'scripts', 'win32-embed.ps1'),
-        '-Action', 'detach-all', '-ProcessName', pn
-      ], () => {});
-    } catch (e) {}
-  });
-});
-
-// ============================================================================
-// 单实例锁：重复双击桌面图标时，自动把已打开的窗口恢复置顶，绝不后台多开
+// 单实例锁
 // ============================================================================
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -582,28 +366,8 @@ if (!gotSingleInstanceLock) {
   });
 }
 
-app.whenReady().then(async () => {
-  killOrphanWin32WatchersAll(); // Fix 14: 启动时先清理上一实例遗留的孤儿 watcher 进程
+app.whenReady().then(() => {
   createMainWindow();
-
-  // 修复19: 启动救援 —— 若上次是强杀/崩溃退出（before-quit detach 没跑），客服窗口会永远藏在后台。
-  // 对 platforms.js 登记的 win32ProcessName 各跑一次 rescue（RESTORE+SHOW，绝不关窗）。
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  const rescueProcs = [...new Set(PLATFORMS.filter((p) => p.supportWin32Embed).map((p) => p.win32ProcessName).filter(Boolean))];
-  const mainHwndNow = getMainOwnerHwnd();
-  console.log('[win32] STARTUP mainHwnd=' + mainHwndNow + ' rescue process=[' + rescueProcs.join(',') + ']');
-  for (const pn of rescueProcs) {
-    try {
-      await new Promise((res) => {
-        execFile('powershell.exe', [
-          '-NoProfile', '-ExecutionPolicy', 'Bypass',
-          '-File', path.join(__dirname, 'scripts', 'win32-embed.ps1'),
-          '-Action', 'rescue', '-ProcessName', pn, '-ParentHwnd', String(getMainOwnerHwnd())
-        ], { timeout: 8000 }, () => res());
-      });
-    } catch (e) {}
-  }
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });

@@ -805,63 +805,6 @@ body, html {
   justify-content: space-between;
 }
 
-/* ============================================================================
- * 5. 右侧全局快捷话术库抽屉 (Quick Reply Drawer)
- * ============================================================================ */
-.quick-reply-drawer {
-  width: 270px;
-  background: #0f172a;
-  border-left: 1px solid #334155;
-  display: flex;
-  flex-direction: column;
-  color: #f8fafc;
-  flex-shrink: 0;
-}
-
-.quick-reply-drawer.hidden {
-  display: none;
-}
-
-.drawer-header {
-  padding: 12px 14px;
-  border-bottom: 1px solid #1e293b;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.drawer-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.qr-item {
-  background: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 8px;
-  padding: 10px;
-  cursor: pointer;
-  transition: border-color 0.15s, transform 0.1s;
-}
-
-.qr-item:hover {
-  border-color: #3b82f6;
-  transform: translateY(-1px);
-}
-
-.qr-item-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 5px;
-}
-
 .qr-cat {
   font-size: 10px;
   padding: 1px 6px;
@@ -1031,7 +974,6 @@ body, html {
   }
 }
 
-
 /* ============================================================================
    标签页拖拽换位高亮
    ============================================================================ */
@@ -1061,61 +1003,4 @@ body, html {
   background: #1e293b; border: 1px solid #38bdf8;
   box-shadow: 0 4px 16px rgba(0,0,0,.4), 0 0 8px rgba(56,189,248,.3);
   font-size: 12px; color: #e2e8f0; white-space: nowrap; overflow: hidden;
-}
-
-/* ============================================================================
-   Windows 原生客服窗口内嵌控制条（win32:// 模式）
-   ============================================================================ */
-.win32-embed-control {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 10px 14px; background: #0b1220; border-bottom: 1px solid #1e293b;
-}
-.win32-ctl-bar {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-}
-.win32-ctl-title { font-size: 13px; font-weight: 700; color: #cbd5e1; margin-right: 6px; }
-.win32-btn {
-  font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
-  background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
-}
-.win32-btn:hover { background: #334155; }
-.win32-btn:disabled { opacity: .4; cursor: not-allowed; }
-.win32-win-list { display: flex; flex-wrap: wrap; gap: 8px; }
-.win32-win-item {
-  font-size: 12px; padding: 6px 10px; border-radius: 6px; cursor: pointer;
-  background: #16213a; color: #93c5fd; border: 1px solid #2c3e5c;
-}
-.win32-win-item:hover { background: #1e3a8a; }
-.win32-win-item.win32-win-active {
-  background: #0ea5e9; color: #fff; border-color: #0ea5e9;
-}
-.win32-empty { font-size: 12px; color: #fca5a5; padding: 4px 2px; }
-.win32-embed-frame {
-  flex: 1; min-height: 420px; position: relative;
-  background: repeating-linear-gradient(45deg, #0f172a, #0f172a 12px, #111a2e 12px, #111a2e 24px);
-}
-.win32-frame-hint {
-  position: absolute; inset: 0; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; text-align: center;
-  color: #94a3b8; font-size: 13px; line-height: 1.8; padding: 20px;
-}
-.shop-pane.active .win32-embed-control, .shop-pane.active .win32-embed-frame { display: flex; }
-
-/* Win32 客户端未检测到时的友好提示卡片 */
-.win32-no-client {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 10px; padding: 40px 20px; text-align: center;
-  color: #94a3b8; background: #0f172a; height: 100%;
-}
-.win32-no-client-icon { font-size: 48px; margin-bottom: 4px; }
-.win32-no-client-title { font-size: 16px; font-weight: 700; color: #e2e8f0; }
-.win32-no-client-desc { font-size: 13px; color: #64748b; max-width: 420px; line-height: 1.6; }
-.win32-no-client-btn {
-  display: inline-block; margin-top: 6px; padding: 8px 18px;
-  background: #1e40af; color: #fff; border-radius: 6px; font-size: 13px;
-  font-weight: 600; text-decoration: none; cursor: pointer; border: none;
-}
-.win32-no-client-btn:hover { background: #2563eb; }
-.win32-status {
-  font-size: 12px; color: #94a3b8; flex: 1;
 }

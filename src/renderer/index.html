@@ -11,12 +11,8 @@
        第一层：像浏览器一样的顶部多店铺标签栏（点击零延迟切换、收到消息变色呼吸闪烁）
        ==================================================================== -->
   <header class="tabbar-container">
-    <div class="app-brand" title="八大电商平台纯客服聚合接待系统">
+    <div class="app-brand" title="八大电商平台聚合客服工作台">
       <div class="brand-logo">聚</div>
-      <div>
-        <span class="brand-title">聚客宝·客服聚合台</span>
-        <span class="brand-subtitle">纯客服无后台</span>
-      </div>
     </div>
 
     <!-- 店铺标签页滚动区（支持8大平台 + 同平台多店铺多开） -->
@@ -45,13 +41,8 @@
         <span id="currentPartitionLabel" class="partition-tag" title="每个店铺拥有完全独立的Cookie与本地存储沙箱，多开不串号">persist:shop_douyin_1</span>
       </div>
 
-      <!-- 切换官方客服入口地址 / Win32原生嵌入 -->
-      <select id="urlEntrySelect" class="url-select" title="切换该平台的官方纯客服入口或Windows窗口内嵌模式"></select>
-
-      <!-- 纯净客服模式（隐藏商家后台菜单） -->
-      <button id="btnToggleCleanMode" class="toolbar-btn btn-active-green" title="自动注入CSS隐藏商品管理/营销中心等商家后台菜单，100%只保留原版客服聊天界面">
-        <span>✨ 纯净客服模式: 已开启(无后台)</span>
-      </button>
+      <!-- 切换官方客服/订单入口地址 -->
+      <select id="urlEntrySelect" class="url-select" title="切换该平台的官方入口"></select>
 
       <!-- 账密保险箱与一键自动填充登录 -->
       <button id="btnOpenVault" class="toolbar-btn btn-credential" title="加密保存该店铺账号密码，打开软件自动填充登录">
@@ -85,9 +76,6 @@
         <span>🔊 试听</span>
       </button>
 
-      <button id="btnToggleQuickReply" class="toolbar-btn btn-active-green" title="显示/隐藏右侧跨平台通用快捷回复话术栏">
-        <span>💬 快捷话术</span>
-      </button>
     </div>
   </section>
 
@@ -98,14 +86,6 @@
     <!-- 左侧多店铺客服视图舞台 -->
     <div id="webviewsStage" class="webviews-stage"></div>
 
-    <!-- 右侧跨平台通用快捷回复抽屉 -->
-    <aside id="quickReplyDrawer" class="quick-reply-drawer">
-      <div class="drawer-header">
-        <span>⚡ 八平台通用快捷话术</span>
-        <span style="font-size:11px;color:#38bdf8;font-weight:400;">点击直接填入/发送</span>
-      </div>
-      <div id="quickReplyList" class="drawer-list"></div>
-    </aside>
   </main>
 
   <!-- ====================================================================
