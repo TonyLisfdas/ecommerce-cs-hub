@@ -1137,11 +1137,18 @@ body, html {
 
 /* ---- v12: 修复子标签加入后内容区高度塌陷 ---- */
 .shop-pane {
-  display: flex !important;
-  flex-direction: column !important;
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
   height: 100% !important;
+  display: none !important;
+  flex-direction: column !important;
   min-height: 0 !important;
   overflow: hidden !important;
+}
+
+.shop-pane.active {
+  display: flex !important;
 }
 
 .subtab-bar {
