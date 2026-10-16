@@ -181,6 +181,7 @@
     }
     bindToolbarEvents();
     bindOrderDashboardEvents(); // v11 Phase D/E 订单仪表盘 + 新订单提醒
+    setTimeout(fitWebviews, 300); // v12: 启动完成后首次像素校正
 
   }
 
@@ -525,6 +526,7 @@
     const rt = runtimeShops[shop.id] || {};
     rt.activeSubTab = key;
     applySubTabVisibility(shop);
+    setTimeout(fitWebviews, 50); // v12: 切子标签后校正 webview 像素高度
   }
 
   function applySubTabVisibility(shop) {
@@ -538,6 +540,29 @@
     const shop = appState.shops.find((x) => x.id === shopId);
     if (shop) switchShopSubTab(shop, key);
   };
+  // v12: webview 像素高度校正（Electron webview 对百分比高度支持差，直接算像素最可靠）
+  function fitWebviews() {
+    document.querySelectorAll('.subtab-pane').forEach((pane) => {
+      const wv = pane.querySelector('webview');
+      if (!wv) return;
+      const r = pane.getBoundingClientRect();
+      if (r.height > 10 && r.width > 10) {
+        wv.style.height = Math.floor(r.height) + 'px';
+        wv.style.width = Math.floor(r.width) + 'px';
+      } else {
+        const vp = pane.closest('.subtab-viewport') || pane.parentElement;
+        if (vp) {
+          const vr = vp.getBoundingClientRect();
+          if (vr.height > 10) {
+            wv.style.height = Math.floor(vr.height) + 'px';
+            wv.style.width = Math.floor(vr.width) + 'px';
+          }
+        }
+      }
+    });
+  }
+  window.addEventListener('resize', fitWebviews); // v12: 窗口缩放即时校正
+  setInterval(fitWebviews, 2000); // v12: 每 2 秒兜底校正一次
 
   // ============================================================================
   function createShopPaneElement(shop, existingPane) {
@@ -848,6 +873,7 @@
     updateToolbarForActiveShop(shop);
     updateTabBadgesInPlace();
     persistState();
+    setTimeout(fitWebviews, 50); // v12: 切平台标签后校正 webview 像素高度
 
   }
 

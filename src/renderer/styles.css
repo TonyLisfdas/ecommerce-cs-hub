@@ -1134,3 +1134,48 @@ body, html {
   box-shadow: 0 4px 14px rgba(29,78,216,.45);
 }
 .order-dash-float-btn:hover { background: #2563eb; }
+
+/* ---- v12: 修复子标签加入后内容区高度塌陷 ---- */
+.shop-pane {
+  display: flex !important;
+  flex-direction: column !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.subtab-bar {
+  flex: 0 0 auto !important;      /* 子标签栏：固定高度，不参与伸缩 */
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+}
+
+.subtab-viewport {
+  flex: 1 1 auto !important;      /* 占满剩下的全部空间 */
+  min-height: 0 !important;       /* 关键：没有这行，flex 子项不会收缩，内容会被挤扁 */
+  position: relative !important;
+  display: flex !important;
+  overflow: hidden !important;
+}
+
+.subtab-pane {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;       /* 同样关键 */
+  display: none !important;
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.subtab-pane.active {
+  display: flex !important;
+}
+
+.shop-webview,
+.subtab-pane webview {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+}
