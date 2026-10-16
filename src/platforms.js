@@ -11,6 +11,7 @@ const PLATFORMS = [
     id: 'douyin',
     hasCustomerService: true,
     orderUrl: 'https://fxg.jinritemai.com/ffa/morder/order/list',
+    orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '抖店·飞鸽',
     fullName: '抖店飞鸽客服工作台',
     shortName: '抖店',
@@ -53,6 +54,7 @@ const PLATFORMS = [
     id: 'pinduoduo',
     hasCustomerService: true,
     orderUrl: 'https://mms.pinduoduo.com/orders/order_list.html',
+    orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '拼多多·多多客服',
     fullName: '拼多多网页版客服工作台',
     shortName: '拼多多',
@@ -96,6 +98,7 @@ const PLATFORMS = [
     id: 'taobao',
     hasCustomerService: false, // v11: 客服已删，仅保留订单
     orderUrl: 'https://trade.taobao.com/trade/itemlist/list_sold_items.htm',
+    orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '淘宝·卖家中心',
     fullName: '淘宝/天猫千牛客服接待中心',
     shortName: '淘宝',
@@ -138,6 +141,7 @@ const PLATFORMS = [
     id: 'weixin',
     hasCustomerService: true,
     orderUrl: 'https://store.weixin.qq.com/shop/order',
+    orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '微信小店·客服',
     fullName: '微信小店 / 视频号小店客服工作台',
     shortName: '微信',
@@ -181,6 +185,7 @@ const PLATFORMS = [
     id: 'kuaishou',
     hasCustomerService: true,
     orderUrl: 'https://s.kwaixiaodian.com/zone/order/order-list',
+    orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '快手·小店客服',
     fullName: '快手小店客服IM工作台',
     shortName: '快手',
@@ -220,6 +225,7 @@ const PLATFORMS = [
     id: 'xiaohongshu',
     hasCustomerService: false, // v11: 客服已删，仅保留订单
     orderUrl: 'https://qianfan.xiaohongshu.com/shop/order',
+    orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '小红书·订单',
     fullName: '小红书千帆客服工作台',
     shortName: '小红书',
@@ -262,6 +268,7 @@ const PLATFORMS = [
     id: 'jd',
     hasCustomerService: true,
     orderUrl: 'https://shop.jd.com/oms/order-manage',
+    orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '京东·咚咚客服',
     fullName: '京东咚咚商家网页版客服工作台',
     shortName: '京东',

@@ -1055,3 +1055,82 @@ body, html {
 .webview-host { position: absolute; inset: 0; }
 /* 子标签视口里的 webview 撑满 */
 .subtab-viewport webview { width: 100%; height: 100%; border: none; display: block; }
+
+
+/* ====================================================================
+   v11 Phase D/E: 订单仪表盘（侧栏）+ 悬浮展开按钮
+   ==================================================================== */
+.order-dashboard {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 232px;
+  height: 100%;
+  background: #111a2b;
+  border-left: 1px solid #24324a;
+  display: flex;
+  flex-direction: column;
+  z-index: 40;
+  box-shadow: -6px 0 18px rgba(0,0,0,.35);
+}
+.order-dashboard.hidden { display: none; }
+.order-dash-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px;
+  font-size: 12.5px; font-weight: 700; color: #e2e8f0;
+  border-bottom: 1px solid #24324a;
+}
+.order-dash-close {
+  background: none; border: none; color: #64748b; font-size: 13px;
+  cursor: pointer; padding: 2px 6px; border-radius: 4px;
+}
+.order-dash-close:hover { color: #e2e8f0; background: #1e293b; }
+.order-dash-list {
+  flex: 1; overflow-y: auto;
+  padding: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.order-dash-card {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  background: #0d1524;
+  border: 1px solid #1e2a3f;
+  border-left: 3px solid #334155;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background .15s ease, transform .15s ease;
+}
+.order-dash-card:hover { background: #16223a; transform: translateY(-1px); }
+.order-dash-card.disabled { cursor: not-allowed; opacity: .55; }
+.order-dash-card.disabled:hover { background: #0d1524; transform: none; }
+.order-dash-card .od-icon {
+  width: 26px; height: 26px; border-radius: 6px; flex: 0 0 26px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 11px; font-weight: 800;
+}
+.order-dash-card .od-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.order-dash-card .od-info strong { font-size: 12.5px; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.order-dash-card .od-info em { font-size: 11px; color: #94a3b8; font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.order-dash-footer {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 12px;
+  border-top: 1px solid #24324a;
+  font-size: 10.5px; color: #64748b;
+}
+/* 右下角悬浮「展开仪表盘」按钮（仪表盘收起时可见） */
+.order-dash-float-btn {
+  position: fixed;
+  right: 14px;
+  bottom: 74px;
+  z-index: 45;
+  background: #1d4ed8;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(29,78,216,.45);
+}
+.order-dash-float-btn:hover { background: #2563eb; }

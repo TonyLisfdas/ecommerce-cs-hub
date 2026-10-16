@@ -14,6 +14,9 @@ const { ipcRenderer } = require('electron');
   let lastTitle = '';
   let platformConfig = null;
   let cleanStyleEl = null;
+  // v11 Phase D: 订单页「待发货」数字轮扫状态
+  let lastOrderCount = -1;
+  let orderSentOnce = false;
 
   // ============================================================================
   // 1. 拦截网页原生 Notification API（飞鸽、多多、咚咚、千帆等收到消息时会调用）
@@ -289,10 +292,73 @@ const { ipcRenderer } = require('electron');
   }
 
   // ============================================================================
+  // ============================================================================
+  // v11 Phase D: 订单页「待发货」数字扫描（每 90s）
+  // 策略：先找包含关键词(待发货/未发货)文本的 Tab/按钮/统计块，读取其数字徽标或同行数字
+  // ============================================================================
+  function scanOrderPendingCount() {
+    const keywords = (platformConfig && Array.isArray(platformConfig.orderUnreadKeyword)) && platformConfig.orderUnreadKeyword.length
+      ? platformConfig.orderUnreadKeyword
+      : ['待发货'];
+    // 1) 找文本命中关键词的可见元素（Tab/按钮/统计标题）
+    const hitEls = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) {
+      const el = walker.currentNode;
+      const st = window.getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden') continue;
+      const txt = (el.innerText || '').trim();
+      if (txt.length > 40) continue; // 只看小文本块
+      if (keywords.some((k) => txt.includes(k))) hitEls.push(el);
+    }
+    for (const el of hitEls) {
+      // 元素自身带数字徽标（如「待发货 12」）
+      const selfNum = (el.innerText || '').match(/(\d+)\s*单?\s*$/m) || (el.innerText || '').match(/\d+/m);
+      let m = null;
+      const t = (el.innerText || '').trim();
+      const lines = t.split('\n').map((x) => x.trim()).filter(Boolean);
+      for (const line of lines) {
+        if (!keywords.some((k) => line.includes(k))) continue;
+        const nm = line.match(/(\d+)/); // 关键词同一行内的数字
+        if (nm) { m = nm; break; }
+      }
+      if (!m) {
+        // 数字在相邻的徽标/数字节点（子元素、父元素内的 badge）
+        const badges = el.querySelectorAll('[class*="badge"], [class*="count"], [class*="num"], sup');
+        badges.forEach((b) => {
+          if (m) return;
+          const bt = (b.innerText || b.textContent || '').trim();
+          if (/^\d+$/.test(bt)) m = bt.match(/\d+/);
+        });
+      }
+      if (m) {
+        return parseInt(m[1], 10) || 0;
+      }
+    }
+    // 3) 没找到带数字的关键词块 → 未知，返回 -1（仪表盘显示「读取中」，不触发提醒）
+    return -1;
+  }
+
+  function checkOrderCount() {
+    const c = scanOrderPendingCount();
+    lastOrderCount = c;
+    // 首次读到有效数字也要上报一次，让仪表盘显示
+    if (c >= 0 || !orderSentOnce) {
+      ipcRenderer.sendToHost('cs-order-update', { count: c, timestamp: Date.now() });
+      orderSentOnce = true;
+    }
+  }
+
+  // =========================================================================
   // 6. IPC 通信绑定与生命周期启动
   // ============================================================================
   ipcRenderer.on('cs-init-config', (event, config) => {
     platformConfig = config;
+    // v11 Phase D: 订单页 webview 启动 90s 待发货数字轮扫（客服页无 orderUnreadKeyword 自动跳过）
+    if (config && Array.isArray(config.orderUnreadKeyword) && config.orderUnreadKeyword.length) {
+      checkOrderCount();
+      setInterval(checkOrderCount, 90000);
+    }
     if (config && config.cleanModeEnabled && config.cleanCss) {
       applyCleanMode(true, config.cleanCss);
     }

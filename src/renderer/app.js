@@ -21,6 +21,10 @@
 
   // 每个店铺运行时的未读数、闪烁状态与会话数据
   const runtimeShops = {};
+  // v11 Phase D/E: 订单仪表盘 + 新订单提醒 运行时状态
+  const orderCounts = {}; // shopId → 待发货 count (-1=未读到, 0=无, >0=有)
+  let orderDashVisible = false;
+
 
   // ============================================================================
   // 1. Web Audio API 零依赖客服提示音合成器（叮咚声 / 水晶铃 / 急促多巴胺提醒）
@@ -132,6 +136,15 @@
       window.csElectronAPI.onFocusShopTab(({ shopId }) => {
         if (shopId) switchToShopTab(shopId);
       });
+      if (window.csElectronAPI.onFocusOrderTab) {
+        window.csElectronAPI.onFocusOrderTab(({ platformName }) => {
+          const plat = platforms.find((x) => x.shortName === platformName);
+          if (plat) {
+            const shop = appState.shops.find((x) => x.platformId === plat.id);
+            if (shop) { switchToShopTab(shop.id); switchShopSubTab(shop, 'order'); }
+          }
+        });
+      }
     } else {
       const saved = localStorage.getItem('cs_hub_browser_state_v1');
       if (saved) {
@@ -167,6 +180,7 @@
       document.body.appendChild(gh);
     }
     bindToolbarEvents();
+    bindOrderDashboardEvents(); // v11 Phase D/E 订单仪表盘 + 新订单提醒
 
   }
 
@@ -461,7 +475,8 @@
         unreadSelectors: plat.unreadSelectors,
         loginSelectors: plat.loginSelectors,
         autoFillOnLoad: shop.autoFill,
-        credentials: { username: shop.username || '', password: shop.password || '', autoSubmit: shop.autoSubmit }
+        credentials: { username: shop.username || '', password: shop.password || '', autoSubmit: shop.autoSubmit },
+        orderUnreadKeyword: plat.orderUnreadKeyword || []
       });
     });
 
@@ -491,6 +506,14 @@
             rt.unreadCount = payload.unreadCount;
             updateTabBadgesInPlace();
           }
+        }
+      });
+    }
+    // v11 Phase D: 订单页「待发货」数字感知
+    if (kind === 'order') {
+      webview.addEventListener('ipc-message', (event) => {
+        if (event.channel === 'cs-order-update') {
+          handleOrderCountUpdate(shop.id, event.args[0] || {});
         }
       });
     }
@@ -1209,5 +1232,135 @@
       .replace(/"/g, '&quot;');
   }
 
+
+  // ===========================================================================
+  // v11 Phase D: 订单仪表盘渲染 + 订单数字更新处理
+  // ===========================================================================
+  function handleOrderCountUpdate(shopId, payload) {
+    if (!appState || !Array.isArray(appState.shops)) return;
+    const oldCount = (typeof orderCounts[shopId] === 'number') ? orderCounts[shopId] : -1;
+    const newCount = (typeof payload.count === 'number' && payload.count >= 0) ? payload.count : -1;
+    orderCounts[shopId] = newCount;
+    // 只在两个都是有效数字且新数字 > 旧数字时触发提醒
+    if (newCount >= 0 && oldCount >= 0 && newCount > oldCount) {
+      maybeTriggerOrderAlert(shopId, newCount);
+    }
+    renderOrderDashboard();
+  }
+
+  function maybeTriggerOrderAlert(shopId, newCount) {
+    if (appState.orderAlertEnabled === false) return;
+    const shop = appState.shops.find((s) => s.id === shopId);
+    if (!shop) return;
+    const plat = platformMap[shop.platformId] || platforms[0];
+    playAlertChime(appState.soundSettings?.tone || 'dingdong');
+    showOrderToast(plat, shop, newCount);
+    if (isElectron && window.csElectronAPI.triggerOrderAlert) {
+      window.csElectronAPI.triggerOrderAlert({
+        platformName: plat.shortName,
+        shopName: shop.shopName,
+        count: newCount
+      });
+    }
+  }
+
+  function showOrderToast(plat, shop, count) {
+    const stack = document.getElementById('toastStack');
+    if (!stack) return;
+    const toast = document.createElement('div');
+    toast.className = 'incoming-toast';
+    toast.style.borderLeftColor = plat.color;
+    toast.innerHTML =
+      '<div style="display:flex;align-items:center;gap:6px;">'
+      + '<span class="tab-platform-icon" style="width:18px;height:18px;font-size:10px;background:' + plat.color + '" >' + plat.iconText + '</span>'
+      + '<strong style="font-size:12.5px;color:#fff;">' + plat.shortName + ' 有新订单</strong>'
+      + '<span style="font-size:11px;color:#94a3b8;">待发货 ' + count + ' 单</span>'
+      + '</div>';
+    toast.addEventListener('click', () => {
+      switchToShopTab(shop.id);
+      switchShopSubTab(shop, 'order');
+      toast.remove();
+    });
+    stack.appendChild(toast);
+    setTimeout(() => { if (toast.parentNode) toast.remove(); }, 6000);
+  }
+
+  function renderOrderDashboard() {
+    if (!appState || !Array.isArray(appState.shops)) return;
+    const list = document.getElementById('orderDashList');
+    if (!list) return;
+    list.innerHTML = '';
+    platforms.forEach((plat) => {
+      if (plat.orderUnsupported) {
+        const card = document.createElement('div');
+        card.className = 'order-dash-card disabled';
+        card.innerHTML =
+          '<span class="od-icon" style="background:' + plat.color + '">' + plat.iconText + '</span>'
+          + '<div class="od-info"><strong>' + plat.shortName + '</strong><em>暂不支持</em></div>';
+        list.appendChild(card);
+        return;
+      }
+      if (!plat.orderUrl) return;
+      let total = 0, hasData = false;
+      appState.shops.filter((s) => s.platformId === plat.id).forEach((s) => {
+        const c = orderCounts[s.id];
+        if (typeof c === 'number' && c >= 0) { total += c; hasData = true; }
+      });
+      const card = document.createElement('div');
+      card.className = 'order-dash-card';
+      card.style.borderLeftColor = plat.color;
+      card.innerHTML =
+        '<span class="od-icon" style="background:' + plat.color + '">' + plat.iconText + '</span>'
+        + '<div class="od-info"><strong>' + plat.shortName + '</strong><em>'
+        + (hasData ? total + ' 单待发货' : '读取中…') + '</em></div>';
+      card.addEventListener('click', () => {
+        const shop = appState.shops.find((s) => s.platformId === plat.id);
+        if (shop) { switchToShopTab(shop.id); switchShopSubTab(shop, 'order'); }
+        toggleOrderDashboard(false);
+      });
+      list.appendChild(card);
+    });
+    const refAt = document.getElementById('orderDashRefreshAt');
+    if (refAt) refAt.textContent = '上次刷新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  }
+
+  function toggleOrderDashboard(show) {
+    const dash = document.getElementById('orderDashboard');
+    const floatBtn = document.getElementById('orderDashFloatBtn');
+    const toggleBtn = document.getElementById('btnToggleOrderDashboard');
+    if (!dash) return;
+    orderDashVisible = (show !== undefined) ? show : !orderDashVisible;
+    dash.classList.toggle('hidden', !orderDashVisible);
+    if (floatBtn) floatBtn.style.display = orderDashVisible ? 'none' : '';
+    if (toggleBtn) toggleBtn.classList.toggle('btn-active-green', orderDashVisible);
+    if (orderDashVisible) renderOrderDashboard();
+  }
+
+  // ===========================================================================
+  // v11 Phase D/E: 仪表盘按钮绑定
+  // ===========================================================================
+  function bindOrderDashboardEvents() {
+    const btnAlert = document.getElementById('btnToggleOrderAlert');
+    if (btnAlert) {
+      const syncBtn = () => {
+        const on = appState.orderAlertEnabled !== false;
+        const span = btnAlert.querySelector('span');
+        if (span) span.textContent = '📥 新订单提醒: ' + (on ? '开' : '关');
+        btnAlert.classList.toggle('btn-active-green', on);
+      };
+      syncBtn();
+      btnAlert.addEventListener('click', () => {
+        appState.orderAlertEnabled = !appState.orderAlertEnabled;
+        persistState();
+        syncBtn();
+      });
+    }
+    const btnDash = document.getElementById('btnToggleOrderDashboard');
+    if (btnDash) btnDash.addEventListener('click', () => toggleOrderDashboard());
+    const btnClose = document.getElementById('btnCloseOrderDash');
+    if (btnClose) btnClose.addEventListener('click', () => toggleOrderDashboard(false));
+    const floatBtn = document.getElementById('orderDashFloatBtn');
+    if (floatBtn) floatBtn.addEventListener('click', () => toggleOrderDashboard(true));
+  }
   window.addEventListener('DOMContentLoaded', initApp);
 })();

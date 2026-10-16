@@ -76,6 +76,14 @@
         <span>🔊 试听</span>
       </button>
 
+      <button id="btnToggleOrderAlert" class="toolbar-btn btn-active-green" title="待发货数字增加时弹小窗+声音提醒（不显示订单详情）">
+        <span>📥 新订单提醒: 开</span>
+      </button>
+
+      <button id="btnToggleOrderDashboard" class="toolbar-btn" title="展开/收起 8 平台待发货订单仪表盘">
+        <span>📊 订单仪表盘</span>
+      </button>
+
     </div>
   </section>
 
@@ -85,6 +93,19 @@
   <main class="workspace-body">
     <!-- 左侧多店铺客服视图舞台 -->
     <div id="webviewsStage" class="webviews-stage"></div>
+
+    <!-- v11 Phase D: 8 平台订单仪表盘（侧栏，可收起） -->
+    <aside id="orderDashboard" class="order-dashboard hidden" aria-label="八平台待发货订单仪表盘">
+      <div class="order-dash-header">
+        <span>📊 八平台待发货</span>
+        <button id="btnCloseOrderDash" class="order-dash-close" title="收起">✕</button>
+      </div>
+      <div id="orderDashList" class="order-dash-list"></div>
+      <div class="order-dash-footer">
+        <span id="orderDashRefreshAt">尚未刷新</span>
+        <span style="opacity:.65;">90s 自动刷新</span>
+      </div>
+    </aside>
 
   </main>
 
@@ -177,6 +198,9 @@
       </div>
     </div>
   </div>
+
+  <!-- v11: 悬浮订单仪表盘展开按钮（右下角，仪表盘收起时可见） -->
+  <button id="orderDashFloatBtn" class="order-dash-float-btn" title="展开订单仪表盘">📊 订单</button>
 
   <!-- 右下角新消息实时弹窗栈 -->
   <div id="toastStack" class="toast-stack"></div>
