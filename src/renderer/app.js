@@ -440,56 +440,44 @@
     });
   }
 
-  function createShopPaneElement(shop, existingPane) {
-    const plat = platformMap[shop.platformId] || platforms[0];
-    const pane = existingPane || document.createElement('div');
-    if (existingPane) {
-      existingPane.innerHTML = ''; // 复用已有 pane（win32 与网页互切时重建）
-    } else {
-      pane.className = `shop-pane ${shop.id === appState.activeShopId ? 'active' : ''}`;
-      pane.id = `pane_${shop.id}`;
-      pane.style.setProperty('--platform-color', plat.color);
+  // ============================================================================
+  // v11 Phase C: 客服/订单 横排子标签（两个 webview 常驻，同 partition 共享 Cookie）
+  // ============================================================================
+  function buildShopWebview(id, srcUrl, shop, plat, kind) {
+    const webview = document.createElement('webview');
+    webview.id = id;
+    webview.className = 'shop-webview';
+    webview.setAttribute('src', srcUrl);
+    webview.setAttribute('partition', shop.partition); // ★ 客服与订单同分区：登录一次两边通用
+    webview.setAttribute('allowpopups', 'true');
+    if (watcherPreloadPath) webview.setAttribute('preload', watcherPreloadPath);
+    webview.dataset.kind = kind;
+
+    webview.addEventListener('dom-ready', () => {
+      webview.send('cs-init-config', {
+        platformId: plat.id,
+        cleanModeEnabled: shop.cleanMode,
+        cleanCss: plat.cleanCss,
+        unreadSelectors: plat.unreadSelectors,
+        loginSelectors: plat.loginSelectors,
+        autoFillOnLoad: shop.autoFill,
+        credentials: { username: shop.username || '', password: shop.password || '', autoSubmit: shop.autoSubmit }
+      });
+    });
+
+    // 抖店未登录卡死兜底（客服页 8s 仍停在 im 域 → 跳登录页，每个 webview 生命周期只跳 1 次）
+    if (kind === 'cs' && plat.id === 'douyin') {
+      let hasFallbackToLogin = false;
+      setTimeout(() => {
+        if (!hasFallbackToLogin && (webview.getURL() || '').indexOf('im.jinritemai.com') !== -1) {
+          hasFallbackToLogin = true;
+          webview.loadURL('https://fxg.jinritemai.com/login/common');
+        }
+      }, 8000);
     }
 
-    if (isElectron) {
-      const srcUrl = shop.customUrl || plat.url;
-      // v11: 移除 Win32 原生嵌入，统一用 <webview> 加载官方网页（淘宝/小红书 指向订单页）
-      // 在 Windows Electron 客户端下直接创建真实持久化隔离的 <webview>
-      const webview = document.createElement('webview');
-      webview.id = `webview_${shop.id}`;
-      webview.className = 'shop-webview';
-      webview.setAttribute('src', srcUrl);
-      webview.setAttribute('partition', shop.partition);
-      webview.setAttribute('allowpopups', 'true');
-      if (watcherPreloadPath) {
-        webview.setAttribute('preload', watcherPreloadPath);
-      }
-
-      let navigated = false;
-      webview.addEventListener('dom-ready', () => {
-        webview.send('cs-init-config', {
-          platformId: plat.id,
-          cleanModeEnabled: shop.cleanMode,
-          cleanCss: plat.cleanCss,
-          unreadSelectors: plat.unreadSelectors,
-          loginSelectors: plat.loginSelectors,
-          autoFillOnLoad: shop.autoFill,
-          credentials: { username: shop.username || '', password: shop.password || '', autoSubmit: shop.autoSubmit }
-        });
-      });
-
-      // ★ 登录成功后自动跳回纯客服工作台（抖店后台->飞鸽 / 千帆后台->千帆客服 / 微信shop->kf）
-      // ★ 抖店未登录卡死兜底：8s 后仍停在飞鸽 -> 自动跳登录页（每个 webview 生命周期只跳 1 次）
-      let hasFallbackToLogin = false;
-      if (plat.id === 'douyin') {
-        setTimeout(() => {
-          if (!hasFallbackToLogin && (webview.getURL() || '').indexOf('im.jinritemai.com') !== -1) {
-            hasFallbackToLogin = true;
-            webview.loadURL('https://fxg.jinritemai.com/login/common');
-          }
-        }, 8000);
-      }
-
+    // 消息感知只挂客服 webview（订单页不产生买家消息）
+    if (kind === 'cs') {
       webview.addEventListener('ipc-message', (event) => {
         if (event.channel === 'cs-incoming-alert') {
           const payload = event.args[0] || {};
@@ -505,8 +493,84 @@
           }
         }
       });
+    }
+    return webview;
+  }
 
-      pane.appendChild(webview);
+  // 切换某店铺的子标签：只切 display（两个 webview 都常驻），速度快、不重新加载、不重新登录
+  function switchShopSubTab(shop, key) {
+    const rt = runtimeShops[shop.id] || {};
+    rt.activeSubTab = key;
+    applySubTabVisibility(shop);
+  }
+
+  function applySubTabVisibility(shop) {
+    const key = (runtimeShops[shop.id] || {}).activeSubTab;
+    const hosts = document.querySelectorAll(`#pane_${shop.id} .subtab-pane`);
+    hosts.forEach((h) => h.classList.toggle('active', h.dataset.subtab === key));
+    const bar = document.getElementById(`subtabbar_${shop.id}`);
+    if (bar) bar.querySelectorAll('.subtab-btn').forEach((b) => b.classList.toggle('active', b.dataset.subtab === key));
+  }
+  window.__switchSubTab = (shopId, key) => {
+    const shop = appState.shops.find((x) => x.id === shopId);
+    if (shop) switchShopSubTab(shop, key);
+  };
+
+  // ============================================================================
+  function createShopPaneElement(shop, existingPane) {
+    const plat = platformMap[shop.platformId] || platforms[0];
+    const pane = existingPane || document.createElement('div');
+    if (existingPane) {
+      existingPane.innerHTML = ''; // 复用已有 pane（win32 与网页互切时重建）
+    } else {
+      pane.className = `shop-pane ${shop.id === appState.activeShopId ? 'active' : ''}`;
+      pane.id = `pane_${shop.id}`;
+      pane.style.setProperty('--platform-color', plat.color);
+    }
+
+    if (isElectron) {
+      const csUrl = shop.customUrl || plat.url;
+      const hasCS = plat.hasCustomerService !== false;          // v11: 淘宝/小红书 = false（只有订单）
+      const orderUrl = (plat.orderUrl || shop.orderUrl || '').trim();
+      const canOrder = !plat.orderUnsupported && orderUrl !== '';
+      if (typeof runtimeShops[shop.id].activeSubTab === 'undefined') {
+        runtimeShops[shop.id].activeSubTab = hasCS ? 'cs' : 'order'; // 默认选中：有客服选客服，否则订单
+      }
+
+      // ── C-1: 横排子标签栏（像浏览器书签，同时只显示一个；切换不重载、不重新登录）──
+      const bar = document.createElement('div');
+      bar.className = 'subtab-bar';
+      bar.id = `subtabbar_${shop.id}`;
+      const mkBtn = (label, key) => {
+        const b = document.createElement('button');
+        b.className = 'subtab-btn' + (runtimeShops[shop.id].activeSubTab === key ? ' active' : '');
+        b.textContent = label;
+        b.dataset.subtab = key;
+        b.addEventListener('click', () => switchShopSubTab(shop, key));
+        return b;
+      };
+      if (hasCS) bar.appendChild(mkBtn('💬 客服', 'cs'));
+      if (canOrder) bar.appendChild(mkBtn('📦 订单', 'order'));
+      pane.appendChild(bar);
+
+      // ── C-2: 子标签视口（两个 webview 常驻，同一 partition 共享 Cookie，切 tab 只切 display）──
+      const viewport = document.createElement('div');
+      viewport.className = 'subtab-viewport';
+      pane.appendChild(viewport);
+      if (hasCS) {
+        const hostCs = document.createElement('div');
+        hostCs.className = 'subtab-pane webview-host' + (runtimeShops[shop.id].activeSubTab === 'cs' ? ' active' : '');
+        hostCs.dataset.subtab = 'cs';
+        hostCs.appendChild(buildShopWebview(`webview_${shop.id}`, csUrl, shop, plat, 'cs'));
+        viewport.appendChild(hostCs);
+      }
+      if (canOrder) {
+        const hostOd = document.createElement('div');
+        hostOd.className = 'subtab-pane webview-host' + (runtimeShops[shop.id].activeSubTab === 'order' ? ' active' : '');
+        hostOd.dataset.subtab = 'order';
+        hostOd.appendChild(buildShopWebview(`webview_order_${shop.id}`, orderUrl, shop, plat, 'order'));
+        viewport.appendChild(hostOd);
+      }
     } else {
       // 在浏览器在线预览环境中，渲染高保真 1:1 原版客服工作台交互仿真器
       renderSimulatedWorkbench(pane, shop);
@@ -907,34 +971,7 @@
       const newUrl = e.target.value;
       const shop = getActiveShop();
       if (!shop) return;
-      const plat = platformMap[shop.platformId];
-
-      const wasWin32 = (shop.customUrl || '').indexOf('win32://') === 0;
-      const willBeWin32 = newUrl.indexOf('win32://') === 0;
-      shop.customUrl = newUrl;
-      persistState();
-      if (willBeWin32) {
-        if (isElectron) {
-          const pane = document.getElementById(`pane_${shop.id}`);
-          if (pane && !wasWin32) createShopPaneElement(shop, pane); // 切到 win32：重建为控制条
-        } else {
-          showIncomingToast(shop, plat, 'Windows 原生窗口内嵌模式', '本地 Windows 运行时将通过 Win32 SetParent 把千牛/微信接待窗嵌入此标签页');
-        }
-        return;
-      }
-      if (isElectron) {
-        if (!wasWin32) {
-          const wv = document.getElementById(`webview_${shop.id}`);
-          if (wv) wv.setAttribute('src', newUrl);
-        } else {
-          const pane = document.getElementById(`pane_${shop.id}`);
-          if (pane) createShopPaneElement(shop, pane); // 从 win32 切回网页：重建为 webview
-        }
-      } else {
-        const pane = document.getElementById(`pane_${shop.id}`);
-        if (pane) renderSimulatedWorkbench(pane, shop);
-      }
-      shop.customUrl = newUrl;
+      shop.customUrl = newUrl; // v11: 改的是「客服」子标签入口
       persistState();
       if (isElectron) {
         const wv = document.getElementById(`webview_${shop.id}`);
@@ -986,8 +1023,8 @@
       if (!shop) return;
       if (isElectron) {
         await window.csElectronAPI.clearShopSession(shop.partition);
-        const wv = document.getElementById(`webview_${shop.id}`);
-        if (wv) wv.reload();
+        const pane = document.getElementById(`pane_${shop.id}`);
+        if (pane) pane.querySelectorAll('webview').forEach((wv) => wv.reload()); // v11: 客服+订单两个子标签都重载
       }
       closeVault();
       const plat = platformMap[shop.platformId];

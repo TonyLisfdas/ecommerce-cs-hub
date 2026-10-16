@@ -1004,3 +1004,54 @@ body, html {
   box-shadow: 0 4px 16px rgba(0,0,0,.4), 0 0 8px rgba(56,189,248,.3);
   font-size: 12px; color: #e2e8f0; white-space: nowrap; overflow: hidden;
 }
+
+/* ============================================================================
+   v11 Phase C: 客服/订单 横排子标签（像浏览器书签栏，切换不重载、不重新登录）
+   ============================================================================ */
+.subtab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px 0 12px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  flex: 0 0 auto;
+}
+.subtab-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  position: relative;
+  transition: color .15s, background .15s;
+  border-bottom: 2px solid transparent;
+}
+.subtab-btn:hover { color: #e2e8f0; background: rgba(255,255,255,0.05); }
+.subtab-btn.active {
+  color: #ffffff;
+  background: var(--platform-color, #334155);
+  color: #fff;
+  border-bottom: 2px solid transparent;
+}
+.subtab-viewport {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  background: #f8fafc;
+  min-height: 0;
+}
+.subtab-pane {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+}
+.subtab-pane.active { display: block; }
+.webview-host { position: absolute; inset: 0; }
+/* 子标签视口里的 webview 撑满 */
+.subtab-viewport webview { width: 100%; height: 100%; border: none; display: block; }
