@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('csElectronAPI', {
   isElectron: true,
   getInitialData: () => ipcRenderer.invoke('cs-get-initial-data'),
   saveState: (state) => ipcRenderer.invoke('cs-save-state', state),
+  setTitleBar: (opts) => ipcRenderer.invoke('cs-set-titlebar', opts), // v18
   clearShopSession: (partition) => ipcRenderer.invoke('cs-clear-shop-session', partition),
   triggerSystemAlert: (payload) => ipcRenderer.invoke('cs-trigger-system-alert', payload),
   triggerOrderAlert: (payload) => ipcRenderer.invoke('cs-trigger-order-alert', payload),

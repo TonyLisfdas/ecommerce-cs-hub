@@ -21,6 +21,10 @@ const CHROME_USER_AGENT =
 let mainWindow = null;
 const configuredPartitions = new Set();
 
+// v18: 让 Windows 任务栏把本窗口识别成「聚客宝」而不是 Electron。
+//      必须在创建任何窗口之前调用，固定到任务栏才会显示正确的名字/图标。
+app.setAppUserModelId('com.cshub.ecommerce.aggregator');
+
 // ============================================================================
 // 本地加密配置与账密保险箱 (AES-256-GCM)
 // ============================================================================
@@ -182,6 +186,7 @@ function createMainWindow() {
     title: '聚客宝 · 八大电商平台聚合客服工作台',
     backgroundColor: '#0F172A',
     autoHideMenuBar: true,
+    titleBarOverlay: { color: '#0f172a', symbolColor: '#e2e8f0', height: 36 }, // v18: 标题栏跟随配色
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -244,6 +249,16 @@ ipcMain.handle('cs-get-initial-data', async () => {
 ipcMain.handle('cs-save-state', async (event, newState) => {
   (newState.shops || []).forEach((s) => ensurePartitionConfigured(s.partition));
   saveAppState(newState);
+  return { ok: true };
+});
+
+// v18: 让界面能改标题栏（最小化/最大化/关闭那一行）的颜色
+ipcMain.handle('cs-set-titlebar', async (event, opts) => {
+  try {
+    if (mainWindow && typeof mainWindow.setTitleBarOverlay === 'function' && opts) {
+      mainWindow.setTitleBarOverlay({ color: opts.color, symbolColor: opts.symbolColor });
+    }
+  } catch (e) {}
   return { ok: true };
 });
 

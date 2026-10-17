@@ -339,15 +339,116 @@ const { ipcRenderer } = require('electron');
     return -1;
   }
 
+  // v18: 判断当前是不是停在登录页（没登录当然读不到订单数字，不该一直显示「读取中」）
+  function csOrderLoginRequired() {
+    try {
+      const u = location.href || '';
+      if (/\/(login|signin|passport|sso)/i.test(u)) return true;
+      if (/login\.taobao\.com|login\.kwaixiaodian\.com|passport\.jd\.com|passport\.shop\.jd\.com|mms\.pinduoduo\.com\/login/i.test(u)) return true;
+      const pwds = document.querySelectorAll('input[type="password"]');
+      for (const p of pwds) {
+        const r = p.getBoundingClientRect();
+        if (r.width > 40 && r.height > 8) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
   function checkOrderCount() {
     const c = scanOrderPendingCount();
     lastOrderCount = c;
+    // v18: 停在登录页 -> 上报 -2（仪表盘显示「未登录」），别再一直显示「读取中」
+    const needLogin = (c < 0) && csOrderLoginRequired();
+    if (needLogin) {
+      ipcRenderer.sendToHost('cs-order-update', { count: -2, loginRequired: true, timestamp: Date.now() });
+      orderSentOnce = true;
+      return;
+    }
     // 首次读到有效数字也要上报一次，让仪表盘显示
     if (c >= 0 || !orderSentOnce) {
       ipcRenderer.sendToHost('cs-order-update', { count: c, timestamp: Date.now() });
       orderSentOnce = true;
     }
   }
+
+  // v18: 京东订单页第一次打开常出现「数据异常，请刷新重试」，自动刷新一次即可。
+  //      只重试一次，避免死循环。
+  function csAutoReloadOnce() {
+    if (window.__csReloadedOnce) return;
+    setTimeout(() => {
+      try {
+        if (window.__csReloadedOnce) return;
+        const t = (document.body && document.body.innerText ? document.body.innerText : '').slice(0, 4000);
+        if (/数据异常|请刷新重试|加载失败|网络异常|页面出错/.test(t)) {
+          window.__csReloadedOnce = true;
+          location.reload();
+        }
+      } catch (e) {}
+    }, 3500);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', csAutoReloadOnce);
+  else csAutoReloadOnce();
+
+  // v18: 一键跳到「等待时间最长」的买家对话（通用启发式，靠时间文字判断）
+  function csWaitMinutes(s) {
+    let m;
+    if ((m = /^(\d+)\s*秒前/.exec(s))) return Number(m[1]) / 60;
+    if (/刚刚/.test(s)) return 0.5;
+    if ((m = /^(\d+)\s*分钟前/.exec(s))) return Number(m[1]);
+    if ((m = /^(\d+)\s*小时前/.exec(s))) return Number(m[1]) * 60;
+    if ((m = /^(\d+)\s*天前/.exec(s))) return Number(m[1]) * 1440;
+    if (/昨天/.test(s)) return 1440;
+    if (/前天/.test(s)) return 2880;
+    if ((m = /^(\d{1,2})\s*:\s*(\d{2})/.exec(s))) return 1440 - (Number(m[1]) * 60 + Number(m[2]));
+    return 0;
+  }
+  function csClickableAncestor(el) {
+    let cur = el, depth = 0;
+    while (cur && cur !== document.body && depth < 8) {
+      let st = null;
+      try { st = window.getComputedStyle(cur); } catch (e) {}
+      const tag = (cur.tagName || '').toLowerCase();
+      const cls = (typeof cur.className === 'string') ? cur.className : '';
+      if ((st && st.cursor === 'pointer') || cur.getAttribute('role') === 'button' ||
+          tag === 'a' || tag === 'button' || /item|row|session|chat|conv|list/i.test(cls)) return cur;
+      cur = cur.parentElement; depth++;
+    }
+    return el;
+  }
+  function csFindOldestConversation() {
+    const timeRe = /(刚刚|\d+\s*秒前|\d+\s*分钟前|\d+\s*小时前|昨天|前天|\d+\s*天前|\d{1,2}\s*:\s*\d{2})/;
+    const cands = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) {
+      const el = walker.currentNode;
+      if (el.children.length > 6) continue;
+      const txt = (el.innerText || el.textContent || '').trim();
+      if (!txt || txt.length > 60 || txt.length < 2) continue;
+      const m = txt.match(timeRe);
+      if (!m) continue;
+      let st = null;
+      try { st = window.getComputedStyle(el); } catch (e) {}
+      if (st && (st.display === 'none' || st.visibility === 'hidden')) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 40 || r.height < 8) continue;
+      cands.push({ el: el, wait: csWaitMinutes(m[0]), tag: m[0] });
+    }
+    if (!cands.length) return null;
+    cands.sort((a, b) => b.wait - a.wait);
+    return cands[0];
+  }
+  ipcRenderer.on('cs-jump-oldest', () => {
+    try {
+      const best = csFindOldestConversation();
+      if (!best) { ipcRenderer.sendToHost('cs-jump-oldest-result', { ok: false, reason: '页面上没找到带时间标记的对话' }); return; }
+      const target = csClickableAncestor(best.el);
+      if (target.scrollIntoView) target.scrollIntoView({ block: 'center' });
+      target.click();
+      ipcRenderer.sendToHost('cs-jump-oldest-result', { ok: true, waitText: best.tag });
+    } catch (e) {
+      ipcRenderer.sendToHost('cs-jump-oldest-result', { ok: false, reason: String((e && e.message) || e) });
+    }
+  });
 
   // =========================================================================
   // 6. IPC 通信绑定与生命周期启动

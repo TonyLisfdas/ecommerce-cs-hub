@@ -181,6 +181,7 @@
     });
 
     applyTheme(appState.theme || 'dark'); // v17: 应用上次保存的配色
+    bindJumpOldestButton();
     bindThemeSelect();
     bindTestToolsToggle();
     populateAddShopPlatformSelect();
@@ -246,6 +247,12 @@
   // ============================================================================ 
   function groupShopsByPlatform(shops) {
     if (!Array.isArray(shops) || shops.length === 0) return shops;
+    // v18: 用户自己拖过顺序之后，就尊重用户的排列，不再按平台自动归拢
+    if (appState && appState.tabOrderCustomized) {
+      const big = 1e9;
+      shops.sort((a, b) => (a.order == null ? big : a.order) - (b.order == null ? big : b.order));
+      return shops;
+    }
     const platOrder = platforms.map((p) => p.id);
     shops.forEach((s) => { if (!platOrder.includes(s.platformId)) platOrder.push(s.platformId); });
     shops.sort((a, b) => {
@@ -270,6 +277,7 @@
     if (toIdx > appState.shops.length) toIdx = appState.shops.length;
     appState.shops.splice(toIdx, 0, moved);
     appState.shops.forEach((x, i) => { x.order = i; });
+    appState.tabOrderCustomized = true; // v18: 用户手动排过了，以后别再自动按平台重排
     renderAllTabs();
     renderAllShopPanes();
     persistState();
@@ -519,7 +527,12 @@
     // 消息感知只挂客服 webview（订单页不产生买家消息）
     if (kind === 'cs') {
       webview.addEventListener('ipc-message', (event) => {
-        if (event.channel === 'cs-incoming-alert') {
+        if (event.channel === 'cs-jump-oldest-result') {
+          const r = event.args[0] || {};
+          const tipfn = (typeof showCopyUrlToast === 'function') ? showCopyUrlToast : function(){};
+          if (r.ok) tipfn('已跳到等待最久的对话（页面上标记的时间：' + (r.waitText || '?') + '）', '#10b981');
+          else tipfn('没能自动跳过去：' + (r.reason || '页面结构未能识别'), '#f97316');
+        } else if (event.channel === 'cs-incoming-alert') {
           const payload = event.args[0] || {};
           handleIncomingMessageAlert(shop.id, payload.title || '买家新消息', payload.body || '请及时接待回复');
         } else if (event.channel === 'cs-unread-update') {
@@ -583,6 +596,20 @@
           }
         }
       }
+    });
+    notifyWebviewsResized();
+  }
+  // v18: 尺寸真的变了，才通知页面里的 JS 重新排版
+  //      （京东客服页最大化后不同步，就是因为页面的 JS 没收到 resize 事件）
+  const __wvSize = {};
+  function notifyWebviewsResized() {
+    document.querySelectorAll('.subtab-pane webview').forEach((wv) => {
+      const id = wv.id || '';
+      if (!id) return;
+      const key = (wv.style.width || '') + 'x' + (wv.style.height || '');
+      if (__wvSize[id] === key) return;
+      __wvSize[id] = key;
+      try { wv.executeJavaScript('try{window.dispatchEvent(new Event("resize"));}catch(e){}; void 0;'); } catch (e) {}
     });
   }
   window.addEventListener('resize', fitWebviews); // v12: 窗口缩放即时校正
@@ -1363,10 +1390,11 @@
         return;
       }
       if (!plat.orderUrl) return;
-      let total = 0, hasData = false;
+      let total = 0, hasData = false, needLogin = false;
       appState.shops.filter((s) => s.platformId === plat.id).forEach((s) => {
         const c = orderCounts[s.id];
         if (typeof c === 'number' && c >= 0) { total += c; hasData = true; }
+        else if (c === -2) { needLogin = true; }
       });
       const card = document.createElement('div');
       card.className = 'order-dash-card';
@@ -1374,7 +1402,7 @@
       card.innerHTML =
         '<span class="od-icon" data-plat="' + plat.id + '" style="background:' + plat.color + '"></span>'
         + '<div class="od-info"><strong>' + plat.shortName + '</strong><em>'
-        + (hasData ? total + ' 单待发货' : '读取中…') + '</em></div>';
+        + (hasData ? total + ' 单待发货' : (needLogin ? '未登录' : '读取中…')) + '</em></div>';
       card.addEventListener('click', () => {
         const shop = appState.shops.find((s) => s.platformId === plat.id);
         if (shop) { switchToShopTab(shop.id); switchShopSubTab(shop, 'order'); }
@@ -1507,6 +1535,21 @@
     else document.documentElement.setAttribute('data-theme', t);
     const sel = document.getElementById('themeSelect');
     if (sel) sel.value = t;
+    // v18: 标题栏（最小化/最大化/关闭那一行）颜色也一起变
+    const TITLEBAR_COLORS = {
+      dark:   ['#0f172a', '#e2e8f0'],
+      navy:   ['#131a2a', '#e2e8f0'],
+      forest: ['#10231a', '#e6f4ec'],
+      gray:   ['#cfd6de', '#1e293b'],
+      blue:   ['#c9d9f2', '#12263f'],
+      green:  ['#c6ddcf', '#16301f']
+    };
+    const tc = TITLEBAR_COLORS[t] || TITLEBAR_COLORS.dark;
+    try {
+      if (isElectron && window.csElectronAPI && window.csElectronAPI.setTitleBar) {
+        window.csElectronAPI.setTitleBar({ color: tc[0], symbolColor: tc[1] });
+      }
+    } catch (e) {}
   }
 
   function bindThemeSelect() {
@@ -1528,6 +1571,27 @@
       grp.classList.toggle('show', show);
       btn.classList.toggle('btn-active-green', show);
     });
+  }
+
+  // ===========================================================================
+  // v18: 一键跳到「等待时间最长」的买家对话
+  //      做法：让页面自己找带时间标记（刚刚 / 3分钟前 / 昨天 / 09:24）的对话，
+  //      挑等待最久的那个点进去。属于通用启发式，各平台准确度会有差异。
+  // ===========================================================================
+  function jumpToOldestConversation() {
+    const shop = getActiveShop();
+    if (!shop) return;
+    const host = document.querySelector("#pane_" + shop.id + " .subtab-pane.active");
+    const wv = host ? host.querySelector("webview") : null;
+    if (!wv) return;
+    const tipfn = (typeof showCopyUrlToast === "function") ? showCopyUrlToast : function(){};
+    try { wv.send("cs-jump-oldest", {}); tipfn("正在「" + shop.shopName + "」里找等待最久的对话…", "#38bdf8"); }
+    catch (e) { tipfn("跳转失败：" + e, "#f97316"); }
+  }
+
+  function bindJumpOldestButton() {
+    const btn = document.getElementById("btnJumpOldest");
+    if (btn) btn.addEventListener("click", jumpToOldestConversation);
   }
 
   window.addEventListener('DOMContentLoaded', initApp);
