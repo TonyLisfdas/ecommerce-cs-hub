@@ -158,6 +158,22 @@
       }
     }
 
+    // v16: 清理残留的旧入口网址。
+    //      如果某条备选入口已经被删掉，但你以前在下拉框里选过它，
+    //      那个地址会被保存在本地（shop.customUrl），删掉下拉项并不会清掉它，
+    //      结果就是：界面显示的是客服入口、实际打开的却是商家后台。这里一律重置回默认。
+    appState.shops.forEach((shop) => {
+      const p = platformMap[shop.platformId];
+      if (!p || !shop.customUrl) return;
+      // 小红书 / 淘宝 这类「只有订单」的平台，customUrl 是你自己用「设为订单页网址」设的，不能动
+      if (p.hasCustomerService === false) return;
+      const stillValid = (shop.customUrl === p.url) || (p.backupUrls || []).some((u) => u.url === shop.customUrl);
+      if (!stillValid) {
+        console.log("[v16] 清理已失效的入口网址：shop.customUrl -> 恢复默认 " + p.url);
+        shop.customUrl = p.url;
+      }
+    });
+    persistState();
     groupShopsByPlatform(appState.shops); // 同平台店铺自动聚拢相邻
     // 初始化每个店铺的运行时会话数据
     appState.shops.forEach((shop) => {
@@ -483,11 +499,14 @@
       });
     });
 
-    // 抖店未登录卡死兜底（客服页 8s 仍停在 im 域 → 跳登录页，每个 webview 生命周期只跳 1 次）
+    // v16: 抖店兜底 —— 原判断写反了：登录正常时网址本来就在 im 域，8 秒后反被拽去商家后台首页。
+    //     改成：只有 8 秒后完全没加载出任何网址（空白 / 加载失败）才跳登录页。
     if (kind === 'cs' && plat.id === 'douyin') {
       let hasFallbackToLogin = false;
       setTimeout(() => {
-        if (!hasFallbackToLogin && (webview.getURL() || '').indexOf('im.jinritemai.com') !== -1) {
+        if (hasFallbackToLogin) return;
+        const u16 = webview.getURL() || '';
+        if (!u16 || u16 === 'about:blank') {
           hasFallbackToLogin = true;
           webview.loadURL('https://fxg.jinritemai.com/login/common');
         }
