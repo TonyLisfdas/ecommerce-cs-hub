@@ -9,3 +9,6 @@ cs-hub-vault.json
 *.dmg
 .DS_Store
 Thumbs.db
+*.bak 
+*.bak-v14 
+*.bak-v15 

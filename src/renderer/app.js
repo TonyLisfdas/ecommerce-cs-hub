@@ -181,6 +181,7 @@
     }
     bindToolbarEvents();
     bindCopyUrlButton(); // v14: 复制当前网址按钮
+    bindSetOrderUrlButton(); // v15: 设为订单页网址按钮
     bindOrderDashboardEvents(); // v11 Phase D/E 订单仪表盘 + 新订单提醒
     setTimeout(fitWebviews, 300); // v12: 启动完成后首次像素校正
 
@@ -580,7 +581,7 @@
     if (isElectron) {
       const csUrl = shop.customUrl || plat.url;
       const hasCS = plat.hasCustomerService !== false;          // v11: 淘宝/小红书 = false（只有订单）
-      const orderUrl = (plat.orderUrl || shop.orderUrl || '').trim();
+      const orderUrl = (shop.orderUrl || plat.orderUrl || '').trim(); // v15: 用户自己设的优先
       const canOrder = !plat.orderUnsupported && orderUrl !== '';
       if (typeof runtimeShops[shop.id].activeSubTab === 'undefined') {
         runtimeShops[shop.id].activeSubTab = hasCS ? 'cs' : 'order'; // 默认选中：有客服选客服，否则订单
@@ -1196,15 +1197,19 @@
   function triggerAutoFillForShop(shop) {
     const plat = platformMap[shop.platformId] || platforms[0];
     if (isElectron) {
-      const wv = document.getElementById(`webview_${shop.id}`);
-      if (wv) {
+      // v15: 客服页 + 订单页 全部填入（原来只发给客服 webview，订单页填不了）
+      const wvs = document.querySelectorAll(`#pane_${shop.id} webview`);
+      let fillHit = 0;
+      wvs.forEach((wv) => {
         wv.send('cs-autofill-now', {
           username: shop.username,
           password: shop.password,
           autoSubmit: shop.autoSubmit,
           loginSelectors: plat.loginSelectors
         });
-      }
+        fillHit++;
+      });
+      if (!fillHit) console.log('[自动填充] 没找到该店铺的 webview');
     } else {
       const pane = document.getElementById(`pane_${shop.id}`);
       if (pane) renderSimulatedWorkbench(pane, shop);
@@ -1444,6 +1449,31 @@
   function bindCopyUrlButton() {
     const btn = document.getElementById("btnCopyCurrentUrl");
     if (btn) btn.addEventListener("click", copyCurrentUrl);
+  }
+
+  // ===========================================================================
+  // v15: 「🔗 设为订单页网址」—— 把当前正在看的页面，保存成该平台的订单页地址
+  //      平台改版导致订单网址失效时，自己点到正确的订单页点一下就行，不用改代码
+  // ===========================================================================
+  function setCurrentAsOrderUrl() {
+    const shop = getActiveShop();
+    if (!shop) return;
+    const host = document.querySelector("#pane_" + shop.id + " .subtab-pane.active");
+    const wv = host ? host.querySelector("webview") : null;
+    const url = (wv && typeof wv.getURL === "function") ? (wv.getURL() || "") : "";
+    const tip = (m, c) => (typeof showCopyUrlToast === "function") ? showCopyUrlToast(m, c) : console.log("[设为订单页] " + m);
+    if (!url || url === "about:blank") { tip("当前页面还没有网址。请先登录，进到「订单」那一页，再点这个按钮。", "#f97316"); return; }
+    const plat = platformMap[shop.platformId] || platforms[0];
+    shop.orderUrl = url;
+    // 小红书 / 淘宝 这类「只有订单、没有客服」的平台，主入口也一起改，下次启动直接进
+    if (plat && plat.hasCustomerService === false) shop.customUrl = url;
+    persistState();
+    tip("已保存！【" + (plat ? plat.shortName : shop.platformId) + "】的订单页网址改成：\n" + url + "\n（下次启动软件生效）", "#10b981");
+  }
+
+  function bindSetOrderUrlButton() {
+    const btn = document.getElementById("btnSetOrderUrl");
+    if (btn) btn.addEventListener("click", setCurrentAsOrderUrl);
   }
 
   window.addEventListener('DOMContentLoaded', initApp);

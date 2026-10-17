@@ -22,8 +22,7 @@ const PLATFORMS = [
     // 直达飞鸽PC网页版客服工作台（纯客服界面，不含抖店后台）
     url: 'https://im.jinritemai.com/pc_seller_v2/main/workspace',
     backupUrls: [
-      { label: '飞鸽IM主工作台（纯客服推荐）', url: 'https://im.jinritemai.com/pc_seller_v2/main/workspace' },
-      { label: '抖店登录入口（登录后跳飞鸽）', url: 'https://fxg.jinritemai.com/login/common' }
+      { label: '飞鸽IM主工作台（纯客服推荐）', url: 'https://im.jinritemai.com/pc_seller_v2/main/workspace' }
     ],
     supportWin32Embed: false,
     unreadSelectors: [
@@ -224,7 +223,7 @@ const PLATFORMS = [
   {
     id: 'xiaohongshu',
     hasCustomerService: false, // v11: 客服已删，仅保留订单
-    orderUrl: 'https://qianfan.xiaohongshu.com/shop/order',
+    orderUrl: 'https://ark.xiaohongshu.com/',
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '小红书·订单',
     fullName: '小红书千帆客服工作台',
@@ -234,7 +233,7 @@ const PLATFORMS = [
     iconText: '红',
     badgeColor: '#FF2442',
     // 小红书官方限制浏览器实时接待 → 主入口走 Windows 原生嵌入「千帆客服工作台」客户端
-    url: 'https://qianfan.xiaohongshu.com/shop/order', // v11: 小红书主入口=订单
+    url: 'https://ark.xiaohongshu.com/', // v11: 小红书主入口=订单
     backupUrls: [
       { label: '千帆客服数据页 (app-cs/gold-cs)', url: 'https://ark.xiaohongshu.com/app-cs/gold-cs' },
       { label: '千帆历史聊天记录查询 (cs-data/chat-manage)', url: 'https://ark.xiaohongshu.com/app-cs/cs-data/chat-manage' }
@@ -267,7 +266,7 @@ const PLATFORMS = [
   {
     id: 'jd',
     hasCustomerService: true,
-    orderUrl: 'https://shop.jd.com/oms/order-manage',
+    orderUrl: 'https://shop.jd.com/', // v15: 原 /oms/order-manage 实测 404
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '京东·咚咚客服',
     fullName: '京东咚咚商家网页版客服工作台',
@@ -279,8 +278,7 @@ const PLATFORMS = [
     // 京东咚咚官方Web版客服工作台
     url: 'https://dongdong.jd.com/',
     backupUrls: [
-      { label: '京东咚咚Web版客服工作台（推荐）', url: 'https://dongdong.jd.com/' },
-      { label: '京麦商家客服中心入口', url: 'https://shop.jd.com/' }
+      { label: '京东咚咚Web版客服工作台（推荐）', url: 'https://dongdong.jd.com/' }
     ],
     supportWin32Embed: true,
     win32ProcessName: 'JMWorkbench',
