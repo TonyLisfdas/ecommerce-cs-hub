@@ -180,6 +180,9 @@
       initShopRuntime(shop);
     });
 
+    applyTheme(appState.theme || 'dark'); // v17: 应用上次保存的配色
+    bindThemeSelect();
+    bindTestToolsToggle();
     populateAddShopPlatformSelect();
     renderAllTabs();
     renderAllShopPanes();
@@ -330,7 +333,7 @@
 
       const hasSavedCred = Boolean(shop.username);
       tabEl.innerHTML = `
-        <div class="tab-platform-icon" style="background:${plat.color};">${plat.iconText}</div>
+        <div class="tab-platform-icon" data-plat="${plat.id}" style="background:${plat.color};"></div>
         <div class="tab-title-wrap">
           <span class="tab-shop-name">${escapeHtml(shop.shopName)}</span>
           <span class="tab-platform-sub">${plat.shortName} · ${hasSavedCred ? '已存账密' : '独立沙箱'}</span>
@@ -906,7 +909,7 @@
     const urlSelectEl = document.getElementById('urlEntrySelect');
 
     badgeEl.style.background = plat.color;
-    badgeEl.textContent = plat.iconText;
+    badgeEl.dataset.plat = plat.id; badgeEl.textContent = ''; // v17: 换成官方图标
     shopLabelEl.textContent = shop.shopName;
     partLabelEl.textContent = shop.partition;
 
@@ -972,7 +975,7 @@
     toast.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
         <div style="display:flex;align-items:center;gap:6px;">
-          <span class="tab-platform-icon" style="width:18px;height:18px;font-size:10px;background:${plat.color};">${plat.iconText}</span>
+          <span class="tab-platform-icon" data-plat="${plat.id}" style="width:18px;height:18px;font-size:10px;background:${plat.color};"></span>
           <strong style="font-size:12.5px;color:#fff;">${escapeHtml(shop.shopName)} · 新咨询消息</strong>
         </div>
         <span style="font-size:10.5px;color:#fde047;font-weight:700;">点击立即接待 ›</span>
@@ -1331,7 +1334,7 @@
     toast.style.borderLeftColor = plat.color;
     toast.innerHTML =
       '<div style="display:flex;align-items:center;gap:6px;">'
-      + '<span class="tab-platform-icon" style="width:18px;height:18px;font-size:10px;background:' + plat.color + '" >' + plat.iconText + '</span>'
+      + '<span class="tab-platform-icon" data-plat="' + plat.id + '" style="width:18px;height:18px;font-size:10px;background:' + plat.color + '" ></span>'
       + '<strong style="font-size:12.5px;color:#fff;">' + plat.shortName + ' 有新订单</strong>'
       + '<span style="font-size:11px;color:#94a3b8;">待发货 ' + count + ' 单</span>'
       + '</div>';
@@ -1354,7 +1357,7 @@
         const card = document.createElement('div');
         card.className = 'order-dash-card disabled';
         card.innerHTML =
-          '<span class="od-icon" style="background:' + plat.color + '">' + plat.iconText + '</span>'
+          '<span class="od-icon" data-plat="' + plat.id + '" style="background:' + plat.color + '"></span>'
           + '<div class="od-info"><strong>' + plat.shortName + '</strong><em>暂不支持</em></div>';
         list.appendChild(card);
         return;
@@ -1369,7 +1372,7 @@
       card.className = 'order-dash-card';
       card.style.borderLeftColor = plat.color;
       card.innerHTML =
-        '<span class="od-icon" style="background:' + plat.color + '">' + plat.iconText + '</span>'
+        '<span class="od-icon" data-plat="' + plat.id + '" style="background:' + plat.color + '"></span>'
         + '<div class="od-info"><strong>' + plat.shortName + '</strong><em>'
         + (hasData ? total + ' 单待发货' : '读取中…') + '</em></div>';
       card.addEventListener('click', () => {
@@ -1493,6 +1496,38 @@
   function bindSetOrderUrlButton() {
     const btn = document.getElementById("btnSetOrderUrl");
     if (btn) btn.addEventListener("click", setCurrentAsOrderUrl);
+  }
+
+  // ===========================================================================
+  // v17: 界面配色切换（深色 / 浅灰 / 浅蓝 / 浅绿）+ 测试工具折叠
+  // ===========================================================================
+  function applyTheme(theme) {
+    const t = theme || 'dark';
+    if (t === 'dark') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', t);
+    const sel = document.getElementById('themeSelect');
+    if (sel) sel.value = t;
+  }
+
+  function bindThemeSelect() {
+    const sel = document.getElementById('themeSelect');
+    if (!sel) return;
+    sel.addEventListener('change', () => {
+      appState.theme = sel.value;
+      persistState();
+      applyTheme(sel.value);
+    });
+  }
+
+  function bindTestToolsToggle() {
+    const btn = document.getElementById('btnToggleTestTools');
+    const grp = document.getElementById('testToolsGroup');
+    if (!btn || !grp) return;
+    btn.addEventListener('click', () => {
+      const show = !grp.classList.contains('show');
+      grp.classList.toggle('show', show);
+      btn.classList.toggle('btn-active-green', show);
+    });
   }
 
   window.addEventListener('DOMContentLoaded', initApp);

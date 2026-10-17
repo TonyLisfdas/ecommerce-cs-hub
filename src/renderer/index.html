@@ -25,7 +25,7 @@
         <strong id="globalUnreadCount">0</strong>
       </div>
       <button id="btnOpenAddShop" class="btn-add-shop" title="同一平台添加第2家、第3家店铺（独立Cookie隔离，绝不串号）">
-        <span>＋ 添加店铺 / 同平台多开</span>
+        <span>＋ 添加店铺</span>
       </button>
     </div>
   </header>
@@ -46,18 +46,25 @@
 
       <!-- 账密保险箱与一键自动填充登录 -->
       <button id="btnOpenVault" class="toolbar-btn btn-credential" title="加密保存该店铺账号密码，打开软件自动填充登录">
-        <span>🔐 保存账密 / 自动登录设置</span>
+        <span>🔐 账密</span>
       </button>
 
       <button id="btnAutoFillNow" class="toolbar-btn" title="立即向当前客服页面自动填入已保存的账号密码">
-        <span>⚡ 一键填入账密</span>
+        <span>⚡ 填账密</span>
       </button>
     </div>
 
     <div class="toolbar-right">
       <!-- 模拟买家发来新消息（立即体验后台标签页变色闪烁 + 客服提示音） -->
+      <button id="btnToggleTestTools" class="toolbar-btn" title="展开/收起 测试工具（模拟来消息、自动消息流、试听提示音）">
+        <span>🧪 测试</span>
+      </button>
+
+      <!-- v17: 测试工具，默认收起，点「🧪 测试」展开 -->
+      <div id="testToolsGroup" class="test-tools">
+
       <button id="btnSimulateIncoming" class="toolbar-btn btn-test-alert" title="立即触发一条其他平台买家发来的新消息，测试标签页变色闪烁+提示音">
-        <span>🔔 模拟来消息 (测试闪烁+声音)</span>
+        <span>🔔 模拟来消息</span>
       </button>
 
       <button id="btnAutoStream" class="toolbar-btn" title="开启后每6秒随机模拟各平台买家发来咨询消息">
@@ -66,31 +73,39 @@
 
       <!-- 提示音选择与试听 -->
       <select id="soundToneSelect" class="url-select" style="max-width: 145px;" title="选择收到新消息时的提示音风格">
-        <option value="dingdong">🔔 叮咚客服音 (经典)</option>
-        <option value="crystal">🎵 清脆水晶铃 (柔和)</option>
-        <option value="urgent">🚨 急促多巴胺 (防漏单)</option>
-        <option value="mute">🔇 静音模式 (仅闪烁)</option>
+        <option value="dingdong">🔔 叮咚客服音</option>
+        <option value="crystal">🎵 清脆水晶铃</option>
+        <option value="urgent">🚨 急促多巴胺</option>
+        <option value="mute">🔇 静音模式</option>
       </select>
 
       <button id="btnTestSound" class="toolbar-btn" title="试听当前选择的客服提示音">
         <span>🔊 试听</span>
       </button>
+      </div>
 
       <button id="btnToggleOrderAlert" class="toolbar-btn btn-active-green" title="待发货数字增加时弹小窗+声音提醒（不显示订单详情）">
-        <span>📥 新订单提醒: 开</span>
+        <span>📥 订单提醒: 开</span>
       </button>
 
       <button id="btnToggleOrderDashboard" class="toolbar-btn" title="展开/收起 8 平台待发货订单仪表盘">
-        <span>📊 订单仪表盘</span>
+        <span>📊 仪表盘</span>
       </button>
 
       <button id="btnCopyCurrentUrl" class="toolbar-btn" title="复制当前正在查看的客服页/订单页网址到剪贴板">
-        <span>📋 复制当前网址</span>
+        <span>📋 复制网址</span>
       </button>
 
       <button id="btnSetOrderUrl" class="toolbar-btn" title="把当前正在看的页面网址，保存为该平台的订单页地址（下次启动软件生效）">
-        <span>🔗 设为订单页网址</span>
+        <span>🔗 设为订单页</span>
       </button>
+
+      <select id="themeSelect" class="url-select" style="max-width: 104px;" title="切换界面配色">
+        <option value="dark">🌙 深色</option>
+        <option value="gray">⬜ 浅灰</option>
+        <option value="blue">🔵 浅蓝</option>
+        <option value="green">🟢 浅绿</option>
+      </select>
 
     </div>
   </section>

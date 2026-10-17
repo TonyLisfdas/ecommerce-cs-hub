@@ -167,7 +167,7 @@ function ensurePartitionConfigured(partitionName) {
     callback({ cancel: false, responseHeaders });
   });
 
-  applyWeixinCookiePersist(partitionName);
+  applyCookiePersist(partitionName); // v17: 所有平台都做 Cookie 持久化（原来只有微信小店）
 }
 
 // ============================================================================
@@ -193,6 +193,8 @@ function createMainWindow() {
 
   const state = loadAppState();
   (state.shops || []).forEach((s) => ensurePartitionConfigured(s.partition));
+
+  mainWindow.maximize(); // v17: 打开就最大化
 
   mainWindow.loadFile(path.join(__dirname, 'src/renderer/index.html'));
 
@@ -332,19 +334,39 @@ function migrateShopUrls(state) {
   return state;
 }
 
-// 微信小店：把 Session Cookie 手动续期为 30 天持久 Cookie
-function applyWeixinCookiePersist(partitionName) {
-  if (!partitionName || partitionName.indexOf('shop_weixin') === -1) return;
+// v17: 所有平台通用 —— 把「会话 Cookie」续期为 30 天持久 Cookie
+//      背景：Electron 的 persist 分区只会把「有到期时间」的 Cookie 写到硬盘；
+//      快手、微信、拼多多这些平台登录用的是「会话 Cookie」（没有到期时间），
+//      一关软件就被丢掉，下次还得重新扫码登录。这里统一给它们补上到期时间。
+const PERSIST_COOKIE_DOMAINS = [
+  'jinritemai.com', 'pinduoduo.com', 'yangkeduo.com', 'taobao.com', 'tmall.com', 'alibaba.com',
+  'weixin.qq.com', 'kwaixiaodian.com', 'kuaishou.com', 'xiaohongshu.com', 'xhscdn.com',
+  'jd.com', '360buyimg.com', 'goofish.com'
+];
+
+function applyCookiePersist(partitionName) {
+  if (!partitionName) return;
   try {
     const ses = session.fromPartition(partitionName);
     ses.cookies.on('changed', (event, cookie, cause, removed) => {
-      if (!removed && cookie.domain && cookie.domain.indexOf('weixin.qq.com') !== -1 && cookie.session) {
+      try {
+        if (removed || !cookie || !cookie.session || !cookie.domain) return;
+        const d = String(cookie.domain).replace(/^\./, '').toLowerCase();
+        if (!PERSIST_COOKIE_DOMAINS.some((x) => d === x || d.endsWith('.' + x))) return;
         const expiry = Math.floor(Date.now() / 1000) + 30 * 86400;
-        ses.cookies.set({
-          url: 'https://store.weixin.qq.com', name: cookie.name, value: cookie.value,
-          domain: cookie.domain, expirationDate: expiry
-        }, () => {});
-      }
+        const url = (cookie.secure ? 'https://' : 'http://') + d + '/';
+        const p = ses.cookies.set({
+          url: url,
+          name: cookie.name,
+          value: cookie.value,
+          domain: cookie.domain,
+          path: cookie.path || '/',
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+          expirationDate: expiry
+        });
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (e) {}
     });
   } catch (e) {}
 }
