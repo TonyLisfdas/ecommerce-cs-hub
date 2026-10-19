@@ -348,19 +348,33 @@ const { ipcRenderer } = require('electron');
     //      注意不能简单取「这一行第一个数字」—— 一行里可能是
     //      「全部 99  待付款 7  待发货 3」，取第一个就变成 99 了（抖店就栽在这）。
     //      所以：先找关键词位置，优先取它【后面】的数字，没有再取【前面紧挨着】的。
+    // v22: 以前只要求「数字在关键词后面」，不管隔了多远 ——
+    //      淘宝那一行是「待发货 即将超时 已发货 …」，中间隔了十几个字，
+    //      结果抓到了后面别的状态的数字（明明 0 单待发货，却显示成 3 单）。
+    //      现在要求数字必须【紧贴】关键词：中间只允许空格、括号、冒号之类，最多 6 个。
+    const GAP = /^[\s()（）\[\]【】〔〕:：、,.，。\u00b7\uff0d\u2014-]{0,6}(\d[\d,]*)/;
     for (const line of lines) {
-      let ki = -1;
+      const afterHits = [];
+      let beforeTail = null;
       for (const k of keywords) {
-        const pos = line.indexOf(k);
-        if (pos >= 0 && (ki < 0 || pos < ki)) ki = pos;
+        let from = 0;
+        for (;;) {
+          const pos = line.indexOf(k, from);
+          if (pos < 0) break;
+          from = pos + 1;
+          const tail = line.slice(pos + k.length);
+          const an = tail.match(GAP);
+          if (an) afterHits.push({ n: parseInt(an[1].replace(/,/g, ''), 10) || 0, why: '词后:' + k + tail.slice(0, 12) });
+          // 数字在前面的写法（「3 单待发货」）：只认关键词前面【紧挨着】的那一个，
+          //  中间最多夹个「单 / 笔 / 个 / 条 / 件」量词；隔了别的字就不算。
+          const bn = line.slice(0, pos).slice(-8).match(/(\d[\d,]*)\s*[\u5355\u7b14\u4e2a\u6761\u4ef6]?\s*$/);
+          if (bn) beforeTail = { n: parseInt(bn[1].replace(/,/g, ''), 10) || 0, why: '词前:' + line.slice(Math.max(0, pos - 16), pos) };
+        }
       }
-      if (ki < 0) continue;
-      const after = line.slice(ki);
-      const before = line.slice(0, ki);
-      const an = after.match(/(\d[\d,]*)/);
-      const bn = before.match(/(\d[\d,]*)\s*$/);
-      if (an) cands.push({ n: parseInt(an[1].replace(/,/g, ''), 10) || 0, score: 100, why: '词后:' + after.slice(0, 20) });
-      else if (bn) cands.push({ n: parseInt(bn[1].replace(/,/g, ''), 10) || 0, score: 70, why: '词前:' + before.slice(-16) });
+      // 同一个地方可能既匹配到 0 又匹配到别的数（比如「待发货订单」和「待发货」），
+      // 优先认不是 0 的那个；要是全都是 0，那 0 本身就是答案。
+      let pick = afterHits.filter(function (h) { return h.n > 0; })[0] || afterHits[0] || beforeTail;
+      if (pick) cands.push({ n: pick.n, score: (pick === beforeTail ? 70 : 100), why: pick.why });
     }
     // ② 带 badge / count / num 这类字样的小徽标（可信）
     let badges = [];
@@ -389,8 +403,28 @@ const { ipcRenderer } = require('electron');
       }
     } catch (e) {}
     // ⑤ 兜底：整块文字里的数字（最不可信，只有上面都没有时才轮到它）
-    const anym = own.match(/(\d[\d,]*)/);
-    if (anym) cands.push({ n: parseInt(anym[1].replace(/,/g, ''), 10) || 0, score: 20, why: '兜底:' + own.slice(0, 20) });
+    // v22: 兜底也不能乱来。淘宝那一大块订单明细里也含「待发货」三个字，
+    //      直接取第一个数字，就把订单行里的数当成待发货数了（0 单显示成 3 单）。
+    //      现在要求：这一小块文字本身就含关键词、而且不长（顶多是个页签），才认。
+    let ownHasKw = false;
+    for (const k of keywords) { if (own.indexOf(k) >= 0) { ownHasKw = true; break; } }
+    if (ownHasKw && own.length <= 60) {
+      // 兜底也得「紧贴」：整块文字里找「关键词 + 最多 6 个分隔符 + 数字」。
+      // 这么一来，跨行也能认（「待发货」和「3」分在两行），但隔了别的字还是不认。
+      for (const k of keywords) {
+        let from = 0;
+        for (;;) {
+          const pos = own.indexOf(k, from);
+          if (pos < 0) break;
+          from = pos + 1;
+          const m = own.slice(pos + k.length).match(GAP);
+          if (m) {
+            cands.push({ n: parseInt(m[1].replace(/,/g, ''), 10) || 0, score: 20, why: '兜底:' + k + own.slice(pos + k.length, pos + k.length + 12) });
+            break;
+          }
+        }
+      }
+    }
     return cands;
   }
 
@@ -511,6 +545,24 @@ const { ipcRenderer } = require('electron');
       if (d.hints.length >= 40) break;
     }
 
+    // v22: 把每个内嵌框架的来历也报出来。微信小店的订单列表就装在里面，
+    //      可一直读到的是空的 —— 得知道它的网址和类名才有的放矢。
+    d.iframeInfo = [];
+    try {
+      const fl = Array.prototype.slice.call(document.querySelectorAll('iframe'));
+      for (let i = 0; i < fl.length && i < 8; i++) {
+        const f = fl[i];
+        let ok = false, len = 0, fsrc = '', fid = '', fcls = '';
+        try { fsrc = String(f.src || ''); } catch (e) {}
+        try { fid = String(f.id || ''); } catch (e) {}
+        try { fcls = String(f.className || ''); } catch (e) {}
+        try {
+          ok = !!(f.contentDocument && f.contentDocument.body);
+          if (ok) len = String(f.contentDocument.body.innerText || '').length;
+        } catch (e) { ok = false; }
+        d.iframeInfo.push({ src: fsrc.slice(0, 120), id: fid.slice(0, 40), cls: fcls.slice(0, 60), readable: ok, len: len });
+      }
+    } catch (e) {}
     try { d.loginRequired = csOrderLoginRequired(); } catch (e) {}
     return d;
   }
@@ -539,6 +591,9 @@ const { ipcRenderer } = require('electron');
 
     if (c >= 0) {
       orderFailStreak = 0;
+      // v22: 刚刷新完那一会儿，页面可能半渲染，数字忽大忽小 ——
+      //      这段时间读到什么都先不往外报，免得仪表盘乱跳、还误弹「有新订单」。
+      if (Date.now() < orderFreezeUntil) return;
       if (lastSentCount !== c) {
         ipcRenderer.sendToHost('cs-order-update', { count: c, timestamp: Date.now() });
         lastSentCount = c;
@@ -556,9 +611,85 @@ const { ipcRenderer } = require('electron');
 
   // v20: 抖店这类平台的「待发货」页签要点一下才出来，网址里没有参数，刷新就丢了。
   //      扫不到数字的时候，自动帮忙点一次。
+  // ─────────────────────────────────────────────────────────────────────────
+  // v22: 订单页自动刷新
+  //   抖店来了新订单，页面自己不动，扫到的数字也不变 ——
+  //   仪表盘不更新、也不弹「有新订单」提醒（提醒是靠数字变大了才触发的）。
+  //
+  //   注意不能简单 location.reload()：抖店的「待发货」是点页签切过去的，
+  //   一重载就退回默认页，待发货的数字反而没了。所以优先点页面上的「刷新」按钮。
+  // ─────────────────────────────────────────────────────────────────────────
+  let lastUserActionAt = 0;
+  function csMarkUserAction() { lastUserActionAt = Date.now(); }
+  ['mousedown', 'keydown', 'wheel', 'touchstart'].forEach(function (ev) {
+    try { window.addEventListener(ev, csMarkUserAction, { passive: true, capture: true }); } catch (e) {}
+  });
+
+  const ORDER_REFRESH_MS = 180000; // 3 分钟重新查一次
+  let orderFreezeUntil = 0;        // 刷新后的静默期：这段时间读到什么都不往外报
+
+  // 找页面上的「刷新」按钮；找不到就用「查询 / 搜索」；避开重置、导出之类
+  function csFindRefreshButton() {
+    const badWords = ['重置', '清空', '导出', '下载', '打印', '新建', '添加', '删除', '登录', '退出'];
+    let fallback = null;
+    let nodes = [];
+    try { nodes = Array.prototype.slice.call(document.querySelectorAll('button, a, [role="button"], [class*="btn"], [class*="refresh"]')); } catch (e) { return null; }
+    for (const el of nodes) {
+      let t = '';
+      try { t = String((el.innerText || el.textContent) || '').trim(); } catch (e) { continue; }
+      if (!t || t.length > 8) continue;
+      let bad = false;
+      for (const b of badWords) { if (t.indexOf(b) >= 0) { bad = true; break; } }
+      if (bad) continue;
+      let st = null;
+      try { st = window.getComputedStyle(el); } catch (e) {}
+      if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
+      let r = null;
+      try { r = el.getBoundingClientRect(); } catch (e) {}
+      if (!r || r.width < 16 || r.height < 10) continue;
+      if (t.indexOf('刷新') >= 0) return el;
+      if (!fallback && t.indexOf('查询') >= 0) fallback = el;
+    }
+    return fallback;
+  }
+
+  function csOrderAutoRefresh() {
+    try {
+      if (!platformConfig) return;
+      if (!Array.isArray(platformConfig.orderUnreadKeyword) || !platformConfig.orderUnreadKeyword.length) return;
+      // 页面没加载完 / 窗口不可见（这个网页没在眼前）—— 都不动
+      if (document.readyState !== 'complete') return;
+      try { if (document.visibilityState === 'hidden') return; } catch (e) {}
+      // 用户正在输入 —— 绝不打断
+      const ae = document.activeElement;
+      if (ae) {
+        const tag = String(ae.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select' || ae.isContentEditable) return;
+      }
+      // 用户 45 秒内刚动过鼠标键盘 —— 等他忙完
+      if (lastUserActionAt && Date.now() - lastUserActionAt < 45000) return;
+
+      const btn = csFindRefreshButton();
+      window.__csPendingTabTried = false; // 刷新完允许重新点「待发货」页签
+      if (btn) {
+        orderFreezeUntil = Date.now() + 25000;
+        btn.click();
+        [5000, 12000, 26000].forEach(function (ms) { setTimeout(checkOrderCount, ms); });
+        [8000, 20000].forEach(function (ms) { setTimeout(csTryClickPendingTab, ms); });
+      } else {
+        // 没有刷新按钮只能整页重载；多静默一会儿，等重新点回「待发货」页签
+        orderFreezeUntil = Date.now() + 45000;
+        location.reload();
+      }
+    } catch (e) {}
+  }
+
   function csTryClickPendingTab() {
     if (window.__csPendingTabTried) return;
-    if (typeof lastOrderCount === 'number' && lastOrderCount >= 0) return; // 已经读到数字，不用点
+    // v22: 以前只要读到「任意一个」数字就不再点页签了 —— 淘宝读到个错的 3，
+    //      就再也不去点「待发货」页签，错的数一直挂着没人纠正。
+    //      现在只有读到【紧贴关键词】的数字（来源标着「词后」）才算数，其余照样点。
+    if (typeof lastOrderCount === 'number' && lastOrderCount >= 0 && /^\u8bcd\u540e/.test(lastOrderWhy || '')) return;
     try {
       const words = ['待发货', '待发货订单'];
       const nodes = document.querySelectorAll('li, a, button, [role="tab"], [class*="tab"], [class*="menu-item"]');
@@ -680,6 +811,9 @@ const { ipcRenderer } = require('electron');
       setInterval(checkOrderCount, 90000);
       // v20: 扫不到数字时，自动点一下「待发货」页签（抖店等平台必须要点）
       [6000, 20000, 45000].forEach(function (ms) { setTimeout(csTryClickPendingTab, ms); });
+      // v22: 抖店来了新订单页面自己不动，数字不变，仪表盘不更新也不提醒。
+      //      所以每 3 分钟让订单页重新查一次（具体做法见 csOrderAutoRefresh）。
+      setInterval(csOrderAutoRefresh, ORDER_REFRESH_MS);
     }
     if (config && config.cleanModeEnabled && config.cleanCss) {
       applyCleanMode(true, config.cleanCss);

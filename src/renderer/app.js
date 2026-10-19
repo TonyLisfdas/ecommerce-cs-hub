@@ -1696,10 +1696,56 @@
       lines.push('--- 页面上出现的词 ---');
       lines.push(d.hints.join(' / '));
     }
+    // v22: 内嵌框架的来历（微信小店的订单就装在里面，得看看它到底是什么）
+    if (Array.isArray(d.iframeInfo) && d.iframeInfo.length) {
+      lines.push('--- 内嵌框架 ---');
+      d.iframeInfo.forEach(function (f, i) {
+        lines.push('#' + i + ' 能读到=' + (f.readable ? '是' : '否')
+          + ' 正文 ' + (f.len || 0) + ' 字 | 网址=' + (f.src || '(空)')
+          + ' | id=' + (f.id || '-') + ' | class=' + (f.cls || '-'));
+      });
+    }
     const txt = lines.join('\n');
-    const extra = '\n\n（这段已经复制到剪贴板了，直接发给云端小助手，他就能按你真实的页面来改。）';
-    const done = copyTextToClipboard(txt + extra);
-    subtabTip(txt + (done ? extra : '\n\n（复制失败，请把上面这段手动抄给我）'), '#f59e0b');
+    const done = copyTextToClipboard(txt);
+    showDiagModal((plat ? plat.shortName : shopId), txt, done);
+  }
+
+  // v22: 诊断有一千多字，以前塞在屏幕角上的小黄条里根本看不全、也抄不全。
+  //      改成居中弹窗：能上下滚、能一键复制。
+  function showDiagModal(name, text, copied) {
+    let box = document.getElementById('diagModal');
+    if (box) box.remove();
+    box = document.createElement('div');
+    box.id = 'diagModal';
+    box.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:99999;'
+      + 'background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;';
+    box.innerHTML = ''
+      + '<div style="width:min(760px,92vw);max-height:78vh;display:flex;flex-direction:column;overflow:hidden;'
+      + 'background:var(--bg-shell,#1e293b);color:var(--text,#e2e8f0);'
+      + 'border:1px solid var(--border,#334155);border-radius:10px;box-shadow:0 14px 44px rgba(0,0,0,.5);">'
+      + '<div style="padding:10px 14px;border-bottom:1px solid var(--border,#334155);'
+      + 'display:flex;align-items:center;gap:8px;">'
+      + '<strong style="font-size:13px;">【订单页诊断】' + String(name || '') + '</strong>'
+      + '<span style="margin-left:auto;font-size:11.5px;opacity:.7;">'
+      + (copied ? '已复制到剪贴板，直接发给云端小助手' : '复制失败，请手动选中下面文字') + '</span>'
+      + '<button type="button" data-diag="copy" style="font-size:12px;padding:3px 10px;cursor:pointer;">复制</button>'
+      + '<button type="button" data-diag="close" style="font-size:12px;padding:3px 10px;cursor:pointer;">关闭</button>'
+      + '</div>'
+      + '<pre style="margin:0;padding:12px 14px;overflow:auto;flex:1;font-size:12px;'
+      + 'line-height:1.75;white-space:pre-wrap;word-break:break-all;"></pre>'
+      + '</div>';
+    const pre = box.querySelector('pre');
+    if (pre) pre.textContent = text;
+    const cb = box.querySelector('[data-diag="copy"]');
+    if (cb) cb.addEventListener('click', function () {
+      copyTextToClipboard(text);
+      cb.textContent = '已复制 \u2713';
+      setTimeout(function () { cb.textContent = '复制'; }, 1500);
+    });
+    const xb = box.querySelector('[data-diag="close"]');
+    if (xb) xb.addEventListener('click', function () { box.remove(); });
+    box.addEventListener('click', function (e) { if (e.target === box) box.remove(); });
+    document.body.appendChild(box);
   }
 
   // v19: 主进程告诉渲染进程「有个链接被点开了」→ 变成临时子标签
@@ -1821,17 +1867,30 @@
       card.innerHTML =
         '<span class="od-icon" data-plat="' + plat.id + '" style="background:' + plat.color + '"></span>'
         + '<div class="od-info"><strong>' + plat.shortName + '</strong><em>'
-        + (hasData ? total + ' 单待发货' : (needLogin ? '未登录' : '读取中…')) + '</em></div>';
+        + (hasData ? total + ' 单待发货' : (needLogin ? '未登录' : '读取中…')) + '</em></div>'
+        // v22: 卡片右上角的小问号。数字看着不对劲时（比如明明 0 单却显示 3 单）点它，
+        //      就能看到这个页面到底读到的是什么。平时点卡片还是照常跳转，不打扰。
+        + '<span class="od-diag" title="看看这个页面到底读到的是什么">?</span>';
       card.addEventListener('click', () => {
         const shop = appState.shops.find((s) => s.platformId === plat.id);
         if (shop) {
           switchToShopTab(shop.id);
           switchShopSubTab(shop, 'order');
-          // v19: 还在「读取中」的话，顺手把页面情况复制到剪贴板，发给云端小助手就能定位
-          if (!hasData && !needLogin) requestOrderDebug(shop.id);
         }
         toggleOrderDashboard(false);
       });
+      const dg = card.querySelector('.od-diag');
+      if (dg) {
+        dg.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          const s2 = appState.shops.find((s) => s.platformId === plat.id);
+          if (!s2) return;
+          switchToShopTab(s2.id);
+          switchShopSubTab(s2, 'order');
+          // 先让订单页露出来再问它 —— 页面还没建好的话，问了也没人答得上来
+          setTimeout(function () { requestOrderDebug(s2.id); }, 1500);
+        });
+      }
       list.appendChild(card);
     });
     const refAt = document.getElementById('orderDashRefreshAt');
