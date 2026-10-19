@@ -298,6 +298,101 @@ const { ipcRenderer } = require('electron');
   // ============================================================================
   let lastOrderKeyword = '';
   let lastOrderSnippet = '';
+  let lastOrderWhy = '';   // v21: 记录这个数字是从哪儿抓来的，方便排查抓错
+
+  // v21: 递归收集所有能读到的文档（页面正文 + 内嵌框架，最多 3 层）。
+  //      很多商家后台是「页面套框架、框架里再套框架」，只扫一层永远读不到。
+  function collectReadableDocs(depth, seen) {
+    const out = [];
+    if (depth > 3) return out;
+    try { if (document.body) out.push(document.body); } catch (e) {}
+    let frames = [];
+    try { frames = Array.prototype.slice.call(document.querySelectorAll('iframe')); } catch (e) {}
+    for (const f of frames) {
+      let d = null;
+      try { d = f.contentDocument; } catch (e) { d = null; } // 跨域会抛异常，跳过
+      if (!d || !d.body) continue;
+      if (seen.indexOf(d) >= 0) continue;
+      seen.push(d);
+      const inner = [];
+      let ifr = [];
+      try { ifr = Array.prototype.slice.call(d.querySelectorAll('iframe')); } catch (e) {}
+      for (const g of ifr) {
+        let gd = null;
+        try { gd = g.contentDocument; } catch (e) { gd = null; }
+        if (gd && gd.body && seen.indexOf(gd) < 0) { seen.push(gd); inner.push(gd.body); }
+      }
+      out.push(d.body);
+      for (const b of inner) { if (out.indexOf(b) < 0) out.push(b); }
+    }
+    return out;
+  }
+
+  function visibleText(el) {
+    try {
+      const st = window.getComputedStyle(el);
+      if (!st || st.display === 'none' || st.visibility === 'hidden') return '';
+      return String(el.innerText || '').trim();
+    } catch (e) { return ''; }
+  }
+
+  // v21: 给「数字候选」打分，取分最高的那个。
+  //      之前是「碰到第一个数字就用」—— 抖店读数错误就是这么来的：
+  //      抓到了别的页签上的数字。
+  function collectNumberCandidates(el, keywords) {
+    const cands = [];
+    const own = visibleText(el);
+    const lines = own.split('\n').map((x) => x.trim()).filter(Boolean);
+
+    // ① 关键词「最近」的数字（最可信）。
+    //      注意不能简单取「这一行第一个数字」—— 一行里可能是
+    //      「全部 99  待付款 7  待发货 3」，取第一个就变成 99 了（抖店就栽在这）。
+    //      所以：先找关键词位置，优先取它【后面】的数字，没有再取【前面紧挨着】的。
+    for (const line of lines) {
+      let ki = -1;
+      for (const k of keywords) {
+        const pos = line.indexOf(k);
+        if (pos >= 0 && (ki < 0 || pos < ki)) ki = pos;
+      }
+      if (ki < 0) continue;
+      const after = line.slice(ki);
+      const before = line.slice(0, ki);
+      const an = after.match(/(\d[\d,]*)/);
+      const bn = before.match(/(\d[\d,]*)\s*$/);
+      if (an) cands.push({ n: parseInt(an[1].replace(/,/g, ''), 10) || 0, score: 100, why: '词后:' + after.slice(0, 20) });
+      else if (bn) cands.push({ n: parseInt(bn[1].replace(/,/g, ''), 10) || 0, score: 70, why: '词前:' + before.slice(-16) });
+    }
+    // ② 带 badge / count / num 这类字样的小徽标（可信）
+    let badges = [];
+    try { badges = Array.prototype.slice.call(el.querySelectorAll('[class*="badge"], [class*="count"], [class*="num"], sup')); } catch (e) {}
+    for (const b of badges) {
+      const bt = visibleText(b);
+      if (/^\d{1,7}$/.test(bt)) cands.push({ n: parseInt(bt, 10) || 0, score: 80, why: '徽标:' + bt });
+    }
+    // ③ 紧挨着的兄弟节点里孤零零一个数字
+    const sib = [];
+    try {
+      if (el.nextElementSibling) sib.push(el.nextElementSibling);
+      if (el.previousElementSibling) sib.push(el.previousElementSibling);
+    } catch (e) {}
+    for (const s of sib) {
+      const st = visibleText(s);
+      if (/^\d{1,7}$/.test(st)) cands.push({ n: parseInt(st, 10) || 0, score: 60, why: '相邻:' + st });
+      const m2 = st.match(/(\d[\d,]*)\s*单/);
+      if (m2) cands.push({ n: parseInt(m2[1].replace(/,/g, ''), 10) || 0, score: 55, why: '相邻单:' + st.slice(0, 16) });
+    }
+    // ④ 自己的直接子节点里孤零零一个数字
+    try {
+      for (let ci = 0; ci < el.children.length && ci < 8; ci++) {
+        const ct = visibleText(el.children[ci]);
+        if (/^\d{1,7}$/.test(ct)) cands.push({ n: parseInt(ct, 10) || 0, score: 50, why: '子节点:' + ct });
+      }
+    } catch (e) {}
+    // ⑤ 兜底：整块文字里的数字（最不可信，只有上面都没有时才轮到它）
+    const anym = own.match(/(\d[\d,]*)/);
+    if (anym) cands.push({ n: parseInt(anym[1].replace(/,/g, ''), 10) || 0, score: 20, why: '兜底:' + own.slice(0, 20) });
+    return cands;
+  }
 
   function scanRootForOrder(root, keywords) {
     let foundKeyword = null;
@@ -309,52 +404,29 @@ const { ipcRenderer } = require('electron');
       const el = walker.currentNode;
       if (!el || !el.tagName) continue;
       if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'NOSCRIPT') continue;
-      let st = null;
-      try { st = window.getComputedStyle(el); } catch (e) { continue; }
-      if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
-      const txt = (el.innerText || '').trim();
-      if (!txt || txt.length > 60) continue;
+      let txt = '';
+      try { txt = visibleText(el); } catch (e) { continue; }
+      if (!txt || txt.length > 80) continue;
       let hit = false;
       for (const k of keywords) { if (txt.indexOf(k) >= 0) { hit = true; break; } }
-      if (hit) hitEls.push(el);
+      if (hit) hitEls.push({ el: el, txt: txt });
     }
-    for (const el of hitEls) {
-      const t = (el.innerText || '').trim();
+    // 文字越短的元素越「专一」，优先看它
+    hitEls.sort((a, b) => a.txt.length - b.txt.length);
+
+    let best = null;
+    for (const h of hitEls) {
       if (!foundKeyword) {
-        for (const k of keywords) { if (t.indexOf(k) >= 0) { foundKeyword = k; break; } }
-        snippet = t.replace(/\s+/g, ' ').slice(0, 50);
+        for (const k of keywords) { if (h.txt.indexOf(k) >= 0) { foundKeyword = k; break; } }
+        snippet = h.txt.replace(/\s+/g, ' ').slice(0, 50);
       }
-      // ① 关键词同一行里的数字
-      const lines = t.split('\n').map((x) => x.trim()).filter(Boolean);
-      for (const line of lines) {
-        let has = false;
-        for (const k of keywords) { if (line.indexOf(k) >= 0) { has = true; break; } }
-        if (!has) continue;
-        const nm = line.match(/(\d[\d,]*)/);
-        if (nm) return { count: parseInt(nm[1].replace(/,/g, ''), 10) || 0, foundKeyword: foundKeyword, snippet: snippet };
-      }
-      // ② 元素内部的小徽标数字
-      let badges = [];
-      try { badges = Array.prototype.slice.call(el.querySelectorAll('[class*="badge"], [class*="count"], [class*="num"], sup, em, i, span')); } catch (e) { badges = []; }
-      for (const b of badges) {
-        const bt = String((b && (b.innerText || b.textContent)) || '').trim();
-        if (/^\d{1,7}$/.test(bt)) return { count: parseInt(bt, 10) || 0, foundKeyword: foundKeyword, snippet: snippet };
-      }
-      // ③ v19: 相邻兄弟节点 / 子节点 / 父节点里光秃秃一个数字
-      const cands = [];
-      try {
-        if (el.nextElementSibling) cands.push(el.nextElementSibling);
-        if (el.previousElementSibling) cands.push(el.previousElementSibling);
-        for (let ci = 0; ci < el.children.length && ci < 6; ci++) cands.push(el.children[ci]);
-        if (el.parentElement) cands.push(el.parentElement);
-      } catch (e) {}
-      for (const c of cands) {
-        const ct = String((c && (c.innerText || c.textContent)) || '').trim();
-        if (/^\d{1,7}$/.test(ct)) return { count: parseInt(ct, 10) || 0, foundKeyword: foundKeyword, snippet: snippet };
-        const m2 = ct.match(/(\d[\d,]*)\s*单/);
-        if (m2) return { count: parseInt(m2[1].replace(/,/g, ''), 10) || 0, foundKeyword: foundKeyword, snippet: snippet };
+      for (const c of collectNumberCandidates(h.el, keywords)) {
+        // 同分时，元素文字越短越可信
+        const score = c.score - Math.min(15, Math.floor(h.txt.length / 4));
+        if (!best || score > best.score) best = { n: c.n, score: score, why: c.why };
       }
     }
+    if (best) return { count: best.n, foundKeyword: foundKeyword, snippet: snippet, why: best.why };
     return { count: -1, foundKeyword: foundKeyword, snippet: snippet };
   }
 
@@ -363,35 +435,32 @@ const { ipcRenderer } = require('electron');
       ? platformConfig.orderUnreadKeyword.slice()
       : ['待发货'];
     // v19: 各平台叫法不一样，多补几个常见说法
-    ['待发货订单', '未发货', '待处理发货', '待出库', '待备货'].forEach(function (k) {
+    ['待发货订单', '未发货', '待处理发货', '待出库', '待备货', '待发货数'].forEach(function (k) {
       if (keywords.indexOf(k) < 0) keywords.push(k);
     });
 
-    const roots = [];
-    try { if (document.body) roots.push(document.body); } catch (e) {}
-    // v19: 很多商家后台把订单列表放在内嵌框架(iframe)里，不扫框架就永远读不到
-    try {
-      const ifr = document.querySelectorAll('iframe');
-      for (let i = 0; i < ifr.length; i++) {
-        try { if (ifr[i] && ifr[i].contentDocument && ifr[i].contentDocument.body) roots.push(ifr[i].contentDocument.body); } catch (e) {}
-      }
-    } catch (e) {}
+    // v21: 递归收集（页面套框架、框架套框架都能扫到）
+    let roots = [];
+    try { roots = collectReadableDocs(0, []); } catch (e) { roots = []; }
+    if (!roots.length) { try { if (document.body) roots = [document.body]; } catch (e) {} }
 
     let foundKeyword = null;
     let snippet = '';
+    let why = '';
     for (const root of roots) {
       const r = scanRootForOrder(root, keywords);
       if (typeof r.count === 'number' && r.count >= 0) {
         lastOrderKeyword = r.foundKeyword || '';
         lastOrderSnippet = r.snippet || '';
+        lastOrderWhy = r.why || '';
         return r.count;
       }
       if (r.foundKeyword && !foundKeyword) { foundKeyword = r.foundKeyword; snippet = r.snippet; }
     }
     lastOrderKeyword = foundKeyword || '';
     lastOrderSnippet = snippet || '';
-    // v19: 页面上确实写着「待发货」，只是旁边没数字 —— 那基本就是 0 单。
-    //      以前这种情况返回 -1，仪表盘就一直显示「读取中」，看着像坏了。
+    lastOrderWhy = why || '';
+    // 页面上确实写着「待发货」，只是旁边没数字 —— 那基本就是 0 单
     if (foundKeyword) return 0;
     return -1;
   }
@@ -401,26 +470,48 @@ const { ipcRenderer } = require('electron');
     const d = {
       url: '', title: '', bodyLen: 0, iframes: 0, sameOriginIframes: 0,
       keyword: lastOrderKeyword || '', snippet: lastOrderSnippet || '',
+      why: lastOrderWhy || '',
       loginRequired: false,
-      lastCount: (typeof lastOrderCount === 'number' ? lastOrderCount : -1)
+      lastCount: (typeof lastOrderCount === 'number' ? lastOrderCount : -1),
+      frames: [], hints: []
     };
     try { d.url = location.href || ''; } catch (e) {}
     try { d.title = document.title || ''; } catch (e) {}
-    try { d.bodyLen = (document.body && document.body.innerText) ? document.body.innerText.length : 0; } catch (e) {}
     try { d.iframes = document.querySelectorAll('iframe').length; } catch (e) {}
-    try {
-      const ifr = document.querySelectorAll('iframe');
-      for (let i = 0; i < ifr.length; i++) { try { if (ifr[i] && ifr[i].contentDocument) d.sameOriginIframes++; } catch (e) {} }
-    } catch (e) {}
-    try { d.loginRequired = csOrderLoginRequired(); } catch (e) {}
-    try {
-      if (!d.keyword && document.body) {
-        const bt = document.body.innerText || '';
-        ['待发货', '未发货', '待出库', '待备货', '待处理'].forEach(function (k) {
-          if (!d.keyword && bt.indexOf(k) >= 0) d.keyword = k + '（页面上出现过，但没读到数字）';
-        });
+
+    // v21: 把每一个能读到的文档的正文前 300 字都报回来 ——
+    //      光看「有没有待发货」没法定位，必须看见页面上到底写了什么。
+    let docs = [];
+    try { docs = collectReadableDocs(0, []); } catch (e) {}
+    try { d.sameOriginIframes = Math.max(0, docs.length - 1); } catch (e) {}
+    docs.slice(0, 4).forEach(function (bd, i) {
+      let t = '';
+      try { t = String(bd.innerText || ''); } catch (e) {}
+      d.frames.push({ i: i, len: t.length, text: t.replace(/\s+/g, ' ').slice(0, 300) });
+      if (i === 0) d.bodyLen = t.length;
+    });
+
+    // v21: 把所有含「发货 / 待 / 订单 / 单」的短片段列出来（最多 40 条），
+    //      这样就算关键词没命中，也能一眼看出页面上用的是什么词。
+    const want = /发货|待|订单|出库|备货/;
+    const seen = {};
+    for (const bd of docs) {
+      let nodes = [];
+      try { nodes = Array.prototype.slice.call(bd.querySelectorAll('*')); } catch (e) {}
+      for (const el of nodes) {
+        if (d.hints.length >= 40) break;
+        if (el.children && el.children.length > 0) continue; // 只看最里层的文字节点
+        let t = '';
+        try { t = String(el.innerText || el.textContent || '').trim(); } catch (e) { continue; }
+        if (!t || t.length > 24 || !want.test(t)) continue;
+        if (seen[t]) continue;
+        seen[t] = 1;
+        d.hints.push(t);
       }
-    } catch (e) {}
+      if (d.hints.length >= 40) break;
+    }
+
+    try { d.loginRequired = csOrderLoginRequired(); } catch (e) {}
     return d;
   }
 
@@ -584,10 +675,11 @@ const { ipcRenderer } = require('electron');
     // v11 Phase D: 订单页 webview 启动 90s 待发货数字轮扫（客服页无 orderUnreadKeyword 自动跳过）
     if (config && Array.isArray(config.orderUnreadKeyword) && config.orderUnreadKeyword.length) {
       // v20: SPA 页面渲染慢，只在 dom-ready 扫一次经常扫空。前 30 秒多扫几次。
-      [0, 4000, 9000, 18000, 30000].forEach(function (ms) { setTimeout(checkOrderCount, ms); });
+      // v21: 京东那种页面正文只有 36 字（还没渲染完），要多给它点时间
+      [0, 4000, 9000, 18000, 30000, 45000, 60000, 90000].forEach(function (ms) { setTimeout(checkOrderCount, ms); });
       setInterval(checkOrderCount, 90000);
       // v20: 扫不到数字时，自动点一下「待发货」页签（抖店等平台必须要点）
-      [6000, 20000].forEach(function (ms) { setTimeout(csTryClickPendingTab, ms); });
+      [6000, 20000, 45000].forEach(function (ms) { setTimeout(csTryClickPendingTab, ms); });
     }
     if (config && config.cleanModeEnabled && config.cleanCss) {
       applyCleanMode(true, config.cleanCss);

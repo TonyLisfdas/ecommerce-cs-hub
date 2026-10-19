@@ -4,9 +4,10 @@
  * ============================================================================ */
 
 :root {
-  --bg-shell: #0f172a;
-  --bg-tabbar: #0b1120;
-  --bg-toolbar: #1e293b;
+  /* v21: 原来 #0f172a / #0b1120 太黑了，深色三档整体提亮到能看出色相 */
+  --bg-shell: #36435a;
+  --bg-tabbar: #2b3749;
+  --bg-toolbar: #404e66;
   --bg-panel: #ffffff;
   --border-dark: #334155;
   --text-light: #f8fafc;
@@ -1321,11 +1322,11 @@ html[data-theme] .global-unread-pill { background: rgba(239,68,68,.14) !importan
   { background-image: url("data:image/svg+xml,%3Csvg%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%0A%3Cpath%20d%3D%22M22%209.82559C22%2011.112%2020.936%2012.1936%2019.5024%2012.4928C19.2464%2012.5472%2018.976%2012.5744%2018.7008%2012.5744C18.3328%2012.5744%2017.9792%2012.5248%2017.6464%2012.4304C16.6256%2012.1424%2015.8288%2011.4512%2015.528%2010.584C15.4992%2010.504%2015.4784%2010.4224%2015.4592%2010.3408C15.4384%2010.3984%2015.4176%2010.456%2015.392%2010.5152C14.8928%2011.6736%2013.56%2012.5056%2012%2012.5056C10.44%2012.5056%209.10881%2011.6736%208.60641%2010.5152C8.58401%2010.4592%208.56001%2010.4032%208.54241%2010.3456C8.52481%2010.4256%208.50241%2010.5056%208.47361%2010.584C8.17761%2011.4576%207.37281%2012.1536%206.34721%2012.4416C6.01921%2012.5328%205.66561%2012.584%205.29921%2012.584C5.02081%2012.584%204.75361%2012.5552%204.49441%2012.5024C3.06241%2012.2%201.99841%2011.1184%201.99841%209.83519C1.99841%209.49919%202.07041%209.17759%202.20481%208.87839L2.20961%208.86879L4.25761%204.27839H4.25921C4.72801%203.23039%205.77761%202.50079%207.00001%202.50079H17C18.2208%202.50079%2019.2704%203.23039%2019.7376%204.27679C19.7472%204.29439%2019.7552%204.31199%2019.7632%204.33279L21.7936%208.86719C21.9264%209.16479%2022%209.48959%2022%209.82719V9.82559Z%22%20fill%3D%22%230AB8A6%22%20style%3D%22fill%3A%230AB8A6%3Bfill%3Acolor%28display-p3%200.0380%200.7220%200.6528%29%3Bfill-opacity%3A1%3B%22%2F%3E%0A%3Cpath%20d%3D%22M19.976%2015.2992C19.976%2015.3184%2019.976%2015.3408%2019.9712%2015.3616C19.9712%2015.376%2019.9712%2015.392%2019.9664%2015.4064V15.4144C19.6064%2018.8272%2016.176%2021.5008%2011.9984%2021.5008C7.8208%2021.5008%204.3904%2018.8272%204.0304%2015.4144V15.4064C4.0272%2015.392%204.0272%2015.376%204.0272%2015.3616C4.0224%2015.3424%204.0224%2015.32%204.0224%2015.2992C4.0224%2014.8576%204.3808%2014.4992%204.8224%2014.4992C5.2304%2014.4992%205.5664%2014.8048%205.616%2015.2C5.6176%2015.2112%205.6176%2015.2256%205.6208%2015.24C5.8912%2017.8464%208.6464%2019.9008%2011.9984%2019.9008C15.3504%2019.9008%2018.1072%2017.8464%2018.376%2015.24C18.3776%2015.2256%2018.3776%2015.2112%2018.3792%2015.2C18.4288%2014.8064%2018.7648%2014.4992%2019.1728%2014.4992C19.6144%2014.4992%2019.9728%2014.8576%2019.9728%2015.2992H19.976Z%22%20fill%3D%22%230AB8A6%22%20style%3D%22fill%3A%230AB8A6%3Bfill%3Acolor%28display-p3%200.0380%200.7220%200.6528%29%3Bfill-opacity%3A1%3B%22%2F%3E%0A%3C%2Fsvg%3E") !important; }
 /* 配色：新增两套深色 + 三套浅色整体加深 */
 html[data-theme="navy"] {
-  --bg-shell:#131a2a; --bg-tabbar:#0e1421; --bg-toolbar:#1b2436;
+  --bg-shell:#374863; --bg-tabbar:#2b3a52; --bg-toolbar:#41536f; /* v21 提亮 */
   --surface:#1e2739; --surface-2:#26314a; --border-dark:#3a4a63;
 }
 html[data-theme="forest"] {
-  --bg-shell:#10231a; --bg-tabbar:#0b1a13; --bg-toolbar:#172e22;
+  --bg-shell:#35543f; --bg-tabbar:#2a4433; --bg-toolbar:#3d6049; /* v21 提亮 */
   --surface:#1a3226; --surface-2:#21402f; --border-dark:#33563f;
   --text-light:#e6f4ec; --text-muted:#9dc4ac; --accent-blue:#4ade80; --tint:#20402f;
 }
@@ -1475,3 +1476,74 @@ html[data-theme="green"] {
   font-weight: 700;
 }
 /* ============================ V19-END ============================ */
+
+/* ==========================================================================
+   V21-BEGIN
+   v21: 自定义标题栏 + 深色主题提亮
+   ========================================================================== */
+.app-titlebar {
+  flex: 0 0 36px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 150px 0 14px;   /* 右边留给缩小/放大/关闭三个按钮 */
+  background: var(--bg-tabbar, #2b3749);
+  color: var(--text-light, #e2e8f0);
+  border-bottom: 1px solid var(--border-dark, #334155);
+  -webkit-app-region: drag;  /* 让它能拖动窗口 */
+  user-select: none;
+  box-sizing: border-box;
+  min-height: 36px;
+}
+.app-titlebar .atb-brand {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+.app-titlebar .atb-sub {
+  font-size: 11px;
+  opacity: .55;
+}
+/* ============================ V21-END ============================ */
+
+/* v21: 界面里有 12 处面板背景是写死的近黑色。
+   只在三个深色主题下把它们改成跟随主题变量 —— 浅色主题一点不动，
+   免得「提亮深色」把「浅色」也一起搞乱。 */
+html[data-theme="dark"] .shop-tab.active,
+html[data-theme="navy"] .shop-tab.active,
+html[data-theme="forest"] .shop-tab.active,
+html[data-theme="dark"] .current-shop-indicator,
+html[data-theme="navy"] .current-shop-indicator,
+html[data-theme="forest"] .current-shop-indicator,
+html[data-theme="dark"] .url-select,
+html[data-theme="navy"] .url-select,
+html[data-theme="forest"] .url-select,
+html[data-theme="dark"] .toolbar-btn,
+html[data-theme="navy"] .toolbar-btn,
+html[data-theme="forest"] .toolbar-btn,
+html[data-theme="dark"] .sim-bloated-header,
+html[data-theme="navy"] .sim-bloated-header,
+html[data-theme="forest"] .sim-bloated-header,
+html[data-theme="dark"] .sim-bloated-sidebar,
+html[data-theme="navy"] .sim-bloated-sidebar,
+html[data-theme="forest"] .sim-bloated-sidebar,
+html[data-theme="dark"] .modal-card,
+html[data-theme="navy"] .modal-card,
+html[data-theme="forest"] .modal-card,
+html[data-theme="dark"] .form-input, .form-select,
+html[data-theme="navy"] .form-input, .form-select,
+html[data-theme="forest"] .form-input, .form-select,
+html[data-theme="dark"] .incoming-toast,
+html[data-theme="navy"] .incoming-toast,
+html[data-theme="forest"] .incoming-toast,
+html[data-theme="dark"] #tabDragGhost,
+html[data-theme="navy"] #tabDragGhost,
+html[data-theme="forest"] #tabDragGhost,
+html[data-theme="dark"] .subtab-bar,
+html[data-theme="navy"] .subtab-bar,
+html[data-theme="forest"] .subtab-bar,
+html[data-theme="dark"] .order-dash-close:hover,
+html[data-theme="navy"] .order-dash-close:hover,
+html[data-theme="forest"] .order-dash-close:hover {
+  background: var(--bg-tabbar) !important;
+}

@@ -186,7 +186,10 @@ function createMainWindow() {
     title: '聚客宝 · 八大电商平台聚合客服工作台',
     backgroundColor: '#0F172A',
     autoHideMenuBar: true,
-    titleBarOverlay: { color: '#0f172a', symbolColor: '#e2e8f0', height: 36 }, // v18: 标题栏跟随配色
+    // v21: 必须先把系统标题栏隐藏掉，下面那句 titleBarOverlay 才会生效；
+    //      之前颜色不变，就是因为缺这一行 —— 系统画的标题栏我们改不了颜色。
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#2b3749', symbolColor: '#e2e8f0', height: 36 }, // v18/v21: 标题栏跟随配色
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

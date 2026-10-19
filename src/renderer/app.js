@@ -181,6 +181,9 @@
     });
 
     applyTheme(appState.theme || 'dark'); // v17: 应用上次保存的配色
+    // v21: 系统标题栏已隐藏。这条自己做的标题栏只在真正的软件里显示；
+    //      用浏览器打开预览时没有窗口按钮，藏起来免得空一条。
+    try { var __tb = document.getElementById('appTitleBar'); if (__tb && !isElectron) __tb.style.display = 'none'; } catch (e) {}
     bindJumpOldestButton();
     bindPopupTempTabs(); // v19
     bindThemeSelect();
@@ -1676,11 +1679,23 @@
       '当前网址：' + (d.url || '(读不到)'),
       '页面标题：' + (d.title || '(无)'),
       '是否停在登录页：' + (d.loginRequired ? '是' : '否'),
-      '页面上有没有「待发货」这类字：' + (d.keyword ? ('有 →「' + d.keyword + '」') : '【没有】'),
-      '那块文字是：' + (d.snippet || '(无)'),
-      '正文长度：' + (d.bodyLen || 0) + ' 字；内嵌框架 ' + (d.iframes || 0) + ' 个（能读到 ' + (d.sameOriginIframes || 0) + ' 个）',
-      '最近读到的数字：' + (typeof d.lastCount === 'number' ? d.lastCount : '?')
+      '有没有「待发货」这类字：' + (d.keyword ? ('有 →「' + d.keyword + '」') : '【没有】'),
+      '那块文字是：' + (d.snippet || '(无)') + (d.why ? ('（数字来源：' + d.why + '）') : ''),
+      '读到的数字：' + (typeof d.lastCount === 'number' ? d.lastCount : '?'),
+      '正文长度：' + (d.bodyLen || 0) + ' 字；内嵌框架 ' + (d.iframes || 0) + ' 个（能读到 ' + (d.sameOriginIframes || 0) + ' 个）'
     ];
+    // v21: 把页面正文和所有相关片段都列出来 —— 光说「没有待发货」没法定位，
+    //      得看见页面上到底写了什么词，才能精确改。
+    if (Array.isArray(d.frames)) {
+      d.frames.forEach(function (f) {
+        lines.push('--- 第' + f.i + '层正文（' + f.len + ' 字）---');
+        lines.push(f.text || '(空)');
+      });
+    }
+    if (Array.isArray(d.hints) && d.hints.length) {
+      lines.push('--- 页面上出现的词 ---');
+      lines.push(d.hints.join(' / '));
+    }
     const txt = lines.join('\n');
     const extra = '\n\n（这段已经复制到剪贴板了，直接发给云端小助手，他就能按你真实的页面来改。）';
     const done = copyTextToClipboard(txt + extra);
@@ -1946,10 +1961,10 @@
     const sel = document.getElementById('themeSelect');
     if (sel) sel.value = t;
     // v18: 标题栏（最小化/最大化/关闭那一行）颜色也一起变
-    const TITLEBAR_COLORS = {
-      dark:   ['#0f172a', '#e2e8f0'],
-      navy:   ['#131a2a', '#e2e8f0'],
-      forest: ['#10231a', '#e6f4ec'],
+    const TITLEBAR_COLORS = { // v21: 三档深色跟着一起提亮，别再是黑的一条
+      dark:   ['#2b3749', '#e2e8f0'],
+      navy:   ['#2b3a52', '#e2e8f0'],
+      forest: ['#2a4433', '#e6f4ec'],
       gray:   ['#cfd6de', '#1e293b'],
       blue:   ['#c9d9f2', '#12263f'],
       green:  ['#c6ddcf', '#16301f']
