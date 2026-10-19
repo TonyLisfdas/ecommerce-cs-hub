@@ -219,7 +219,10 @@ function createMainWindow() {
           'trade.taobao.com', 'myseller.taobao.com', 'market.m.taobao.com'
         ];
         if (internalPatterns.some((p) => url.includes(p))) {
-          contents.loadURL(url);
+          // v19: 不再顶掉当前正在看的页面，改成开一个临时子标签（跟浏览器的新标签页一样）
+          if (mainWindow && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+            mainWindow.webContents.send('cs-popup-url', { url: url, webContentsId: contents.id });
+          }
         } else {
           shell.openExternal(url);
         }

@@ -1349,3 +1349,129 @@ html[data-theme="green"] {
 }
 
 /* ===== V18-END ============================================================= */
+
+/* ==========================================================================
+   V19-BEGIN
+   v19: 子标签可自定义 —— ➕ 按钮 / 临时标签 / 右键菜单 / 添加表单
+   ========================================================================== */
+.subtab-add {
+  min-width: 30px;
+  padding-left: 9px;
+  padding-right: 9px;
+  opacity: .6;
+  font-size: 13px;
+}
+.subtab-add:hover { opacity: 1; }
+.subtab-btn.temp {
+  border-bottom: 2px dashed rgba(148, 163, 184, .95);
+  font-style: italic;
+}
+.subtab-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  line-height: 1.9;
+  color: var(--text-muted, #94a3b8);
+  font-size: 13px;
+}
+.subtab-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 220px;
+  background: var(--bg-toolbar, #1e293b);
+  border: 1px solid var(--border-dark, #334155);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  padding: 4px;
+  box-sizing: border-box;
+}
+.subtab-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--text-light, #e2e8f0);
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.subtab-menu-item:hover { background: rgba(56, 189, 248, .16); }
+.subtab-form {
+  position: fixed;
+  z-index: 9999;
+  width: 320px;
+  background: var(--bg-toolbar, #1e293b);
+  border: 1px solid var(--border-dark, #334155);
+  border-radius: 10px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .5);
+  padding: 14px;
+  box-sizing: border-box;
+}
+.sf-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: var(--text-light, #e2e8f0);
+}
+.sf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sf-row > span {
+  width: 34px;
+  flex: 0 0 34px;
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+}
+.sf-row > input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  background: var(--bg-shell, #0f172a);
+  color: var(--text-light, #e2e8f0);
+  border: 1px solid var(--border-dark, #334155);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.sf-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+  margin: 6px 0 12px;
+  cursor: pointer;
+}
+.sf-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.sf-btn {
+  background: transparent;
+  border: 1px solid var(--border-dark, #334155);
+  color: var(--text-light, #e2e8f0);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.sf-btn.primary {
+  background: #38bdf8;
+  border-color: #38bdf8;
+  color: #04121f;
+  font-weight: 700;
+}
+/* ============================ V19-END ============================ */

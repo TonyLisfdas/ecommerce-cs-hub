@@ -296,62 +296,132 @@ const { ipcRenderer } = require('electron');
   // v11 Phase D: 订单页「待发货」数字扫描（每 90s）
   // 策略：先找包含关键词(待发货/未发货)文本的 Tab/按钮/统计块，读取其数字徽标或同行数字
   // ============================================================================
-  function scanOrderPendingCount() {
-    const keywords = (platformConfig && Array.isArray(platformConfig.orderUnreadKeyword)) && platformConfig.orderUnreadKeyword.length
-      ? platformConfig.orderUnreadKeyword
-      : ['待发货'];
-    // 1) 找文本命中关键词的可见元素（Tab/按钮/统计标题）
+  let lastOrderKeyword = '';
+  let lastOrderSnippet = '';
+
+  function scanRootForOrder(root, keywords) {
+    let foundKeyword = null;
+    let snippet = '';
     const hitEls = [];
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    let walker = null;
+    try { walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT); } catch (e) { return { count: -1 }; }
     while (walker.nextNode()) {
       const el = walker.currentNode;
-      const st = window.getComputedStyle(el);
-      if (st.display === 'none' || st.visibility === 'hidden') continue;
+      if (!el || !el.tagName) continue;
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'NOSCRIPT') continue;
+      let st = null;
+      try { st = window.getComputedStyle(el); } catch (e) { continue; }
+      if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
       const txt = (el.innerText || '').trim();
-      if (txt.length > 40) continue; // 只看小文本块
-      if (keywords.some((k) => txt.includes(k))) hitEls.push(el);
+      if (!txt || txt.length > 60) continue;
+      let hit = false;
+      for (const k of keywords) { if (txt.indexOf(k) >= 0) { hit = true; break; } }
+      if (hit) hitEls.push(el);
     }
     for (const el of hitEls) {
-      // 元素自身带数字徽标（如「待发货 12」）
-      const selfNum = (el.innerText || '').match(/(\d+)\s*单?\s*$/m) || (el.innerText || '').match(/\d+/m);
-      let m = null;
       const t = (el.innerText || '').trim();
+      if (!foundKeyword) {
+        for (const k of keywords) { if (t.indexOf(k) >= 0) { foundKeyword = k; break; } }
+        snippet = t.replace(/\s+/g, ' ').slice(0, 50);
+      }
+      // ① 关键词同一行里的数字
       const lines = t.split('\n').map((x) => x.trim()).filter(Boolean);
       for (const line of lines) {
-        if (!keywords.some((k) => line.includes(k))) continue;
-        const nm = line.match(/(\d+)/); // 关键词同一行内的数字
-        if (nm) { m = nm; break; }
+        let has = false;
+        for (const k of keywords) { if (line.indexOf(k) >= 0) { has = true; break; } }
+        if (!has) continue;
+        const nm = line.match(/(\d[\d,]*)/);
+        if (nm) return { count: parseInt(nm[1].replace(/,/g, ''), 10) || 0, foundKeyword: foundKeyword, snippet: snippet };
       }
-      if (!m) {
-        // 数字在相邻的徽标/数字节点（子元素、父元素内的 badge）
-        const badges = el.querySelectorAll('[class*="badge"], [class*="count"], [class*="num"], sup');
-        badges.forEach((b) => {
-          if (m) return;
-          const bt = (b.innerText || b.textContent || '').trim();
-          if (/^\d+$/.test(bt)) m = bt.match(/\d+/);
-        });
+      // ② 元素内部的小徽标数字
+      let badges = [];
+      try { badges = Array.prototype.slice.call(el.querySelectorAll('[class*="badge"], [class*="count"], [class*="num"], sup, em, i, span')); } catch (e) { badges = []; }
+      for (const b of badges) {
+        const bt = String((b && (b.innerText || b.textContent)) || '').trim();
+        if (/^\d{1,7}$/.test(bt)) return { count: parseInt(bt, 10) || 0, foundKeyword: foundKeyword, snippet: snippet };
       }
-      if (m) {
-        return parseInt(m[1], 10) || 0;
+      // ③ v19: 相邻兄弟节点 / 子节点 / 父节点里光秃秃一个数字
+      const cands = [];
+      try {
+        if (el.nextElementSibling) cands.push(el.nextElementSibling);
+        if (el.previousElementSibling) cands.push(el.previousElementSibling);
+        for (let ci = 0; ci < el.children.length && ci < 6; ci++) cands.push(el.children[ci]);
+        if (el.parentElement) cands.push(el.parentElement);
+      } catch (e) {}
+      for (const c of cands) {
+        const ct = String((c && (c.innerText || c.textContent)) || '').trim();
+        if (/^\d{1,7}$/.test(ct)) return { count: parseInt(ct, 10) || 0, foundKeyword: foundKeyword, snippet: snippet };
+        const m2 = ct.match(/(\d[\d,]*)\s*单/);
+        if (m2) return { count: parseInt(m2[1].replace(/,/g, ''), 10) || 0, foundKeyword: foundKeyword, snippet: snippet };
       }
     }
-    // 3) 没找到带数字的关键词块 → 未知，返回 -1（仪表盘显示「读取中」，不触发提醒）
+    return { count: -1, foundKeyword: foundKeyword, snippet: snippet };
+  }
+
+  function scanOrderPendingCount() {
+    let keywords = (platformConfig && Array.isArray(platformConfig.orderUnreadKeyword) && platformConfig.orderUnreadKeyword.length)
+      ? platformConfig.orderUnreadKeyword.slice()
+      : ['待发货'];
+    // v19: 各平台叫法不一样，多补几个常见说法
+    ['待发货订单', '未发货', '待处理发货', '待出库', '待备货'].forEach(function (k) {
+      if (keywords.indexOf(k) < 0) keywords.push(k);
+    });
+
+    const roots = [];
+    try { if (document.body) roots.push(document.body); } catch (e) {}
+    // v19: 很多商家后台把订单列表放在内嵌框架(iframe)里，不扫框架就永远读不到
+    try {
+      const ifr = document.querySelectorAll('iframe');
+      for (let i = 0; i < ifr.length; i++) {
+        try { if (ifr[i] && ifr[i].contentDocument && ifr[i].contentDocument.body) roots.push(ifr[i].contentDocument.body); } catch (e) {}
+      }
+    } catch (e) {}
+
+    let foundKeyword = null;
+    let snippet = '';
+    for (const root of roots) {
+      const r = scanRootForOrder(root, keywords);
+      if (typeof r.count === 'number' && r.count >= 0) {
+        lastOrderKeyword = r.foundKeyword || '';
+        lastOrderSnippet = r.snippet || '';
+        return r.count;
+      }
+      if (r.foundKeyword && !foundKeyword) { foundKeyword = r.foundKeyword; snippet = r.snippet; }
+    }
+    lastOrderKeyword = foundKeyword || '';
+    lastOrderSnippet = snippet || '';
+    // v19: 页面上确实写着「待发货」，只是旁边没数字 —— 那基本就是 0 单。
+    //      以前这种情况返回 -1，仪表盘就一直显示「读取中」，看着像坏了。
+    if (foundKeyword) return 0;
     return -1;
   }
 
-  // v18: 判断当前是不是停在登录页（没登录当然读不到订单数字，不该一直显示「读取中」）
-  function csOrderLoginRequired() {
+  // v19: 把订单页的真实情况报回去，方便远程定位「读取中」到底卡在哪
+  function csOrderDebug() {
+    const d = {
+      url: '', title: '', bodyLen: 0, iframes: 0, sameOriginIframes: 0,
+      keyword: lastOrderKeyword || '', snippet: lastOrderSnippet || '',
+      loginRequired: false,
+      lastCount: (typeof lastOrderCount === 'number' ? lastOrderCount : -1)
+    };
+    try { d.url = location.href || ''; } catch (e) {}
+    try { d.title = document.title || ''; } catch (e) {}
+    try { d.bodyLen = (document.body && document.body.innerText) ? document.body.innerText.length : 0; } catch (e) {}
+    try { d.iframes = document.querySelectorAll('iframe').length; } catch (e) {}
     try {
-      const u = location.href || '';
-      if (/\/(login|signin|passport|sso)/i.test(u)) return true;
-      if (/login\.taobao\.com|login\.kwaixiaodian\.com|passport\.jd\.com|passport\.shop\.jd\.com|mms\.pinduoduo\.com\/login/i.test(u)) return true;
-      const pwds = document.querySelectorAll('input[type="password"]');
-      for (const p of pwds) {
-        const r = p.getBoundingClientRect();
-        if (r.width > 40 && r.height > 8) return true;
+      const ifr = document.querySelectorAll('iframe');
+      for (let i = 0; i < ifr.length; i++) { try { if (ifr[i] && ifr[i].contentDocument) d.sameOriginIframes++; } catch (e) {} }
+    } catch (e) {}
+    try { d.loginRequired = csOrderLoginRequired(); } catch (e) {}
+    try {
+      if (!d.keyword && document.body) {
+        const bt = document.body.innerText || '';
+        ['待发货', '未发货', '待出库', '待备货', '待处理'].forEach(function (k) {
+          if (!d.keyword && bt.indexOf(k) >= 0) d.keyword = k + '（页面上出现过，但没读到数字）';
+        });
       }
     } catch (e) {}
-    return false;
+    return d;
   }
 
   function checkOrderCount() {
@@ -453,6 +523,11 @@ const { ipcRenderer } = require('electron');
   // =========================================================================
   // 6. IPC 通信绑定与生命周期启动
   // ============================================================================
+  // v19: 订单页诊断 —— 主界面问，这里答
+  ipcRenderer.on('cs-order-debug-request', () => {
+    try { ipcRenderer.sendToHost('cs-order-debug', csOrderDebug()); } catch (e) {}
+  });
+
   ipcRenderer.on('cs-init-config', (event, config) => {
     platformConfig = config;
     // v11 Phase D: 订单页 webview 启动 90s 待发货数字轮扫（客服页无 orderUnreadKeyword 自动跳过）

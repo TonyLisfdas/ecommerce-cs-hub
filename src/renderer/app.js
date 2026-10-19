@@ -182,6 +182,7 @@
 
     applyTheme(appState.theme || 'dark'); // v17: 应用上次保存的配色
     bindJumpOldestButton();
+    bindPopupTempTabs(); // v19
     bindThemeSelect();
     bindTestToolsToggle();
     populateAddShopPlatformSelect();
@@ -497,16 +498,21 @@
     if (watcherPreloadPath) webview.setAttribute('preload', watcherPreloadPath);
     webview.dataset.kind = kind;
 
+    // v19: 只有内置的客服页 / 订单页才填账号密码、才数「待发货」。
+    //      自己加的页面不填密码（安全），也不参与订单计数（免得把仪表盘数字搞乱）。
+    const isBuiltinSub = (kind === 'cs' || kind === 'order');
     webview.addEventListener('dom-ready', () => {
       webview.send('cs-init-config', {
         platformId: plat.id,
         cleanModeEnabled: shop.cleanMode,
         cleanCss: plat.cleanCss,
-        unreadSelectors: plat.unreadSelectors,
+        unreadSelectors: isBuiltinSub ? plat.unreadSelectors : [],
         loginSelectors: plat.loginSelectors,
-        autoFillOnLoad: shop.autoFill,
-        credentials: { username: shop.username || '', password: shop.password || '', autoSubmit: shop.autoSubmit },
-        orderUnreadKeyword: plat.orderUnreadKeyword || []
+        autoFillOnLoad: isBuiltinSub ? shop.autoFill : false,
+        credentials: isBuiltinSub
+          ? { username: shop.username || '', password: shop.password || '', autoSubmit: shop.autoSubmit }
+          : { username: '', password: '', autoSubmit: false },
+        orderUnreadKeyword: (kind === 'order') ? (plat.orderUnreadKeyword || []) : []
       });
     });
 
@@ -552,6 +558,8 @@
       webview.addEventListener('ipc-message', (event) => {
         if (event.channel === 'cs-order-update') {
           handleOrderCountUpdate(shop.id, event.args[0] || {});
+        } else if (event.channel === 'cs-order-debug') {
+          handleOrderDebug(shop.id, event.args[0] || {});
         }
       });
     }
@@ -561,7 +569,11 @@
   // 切换某店铺的子标签：只切 display（两个 webview 都常驻），速度快、不重新加载、不重新登录
   function switchShopSubTab(shop, key) {
     const rt = runtimeShops[shop.id] || {};
-    rt.activeSubTab = key;
+    const plat = platformMap[shop.platformId] || platforms[0];
+    // v19: 目标子标签可能已经被用户删掉了，那就退回第一个还在的
+    const tabs = getShopAllTabs(shop, plat);
+    rt.activeSubTab = tabs.some((t) => t.id === key) ? key : (tabs.length ? tabs[0].id : key);
+    ensureActiveSubTabLoaded(shop, plat); // v19: 自定义/临时页第一次点开时才真的建网页
     applySubTabVisibility(shop);
     setTimeout(fitWebviews, 50); // v12: 切子标签后校正 webview 像素高度
   }
@@ -621,6 +633,8 @@
     const pane = existingPane || document.createElement('div');
     if (existingPane) {
       existingPane.innerHTML = ''; // 复用已有 pane（win32 与网页互切时重建）
+      // v19: pane 内容被清空了，缓存的子标签容器也要一起丢，否则会把已经不存在的节点挂回去
+      if (runtimeShops[shop.id]) runtimeShops[shop.id].hosts = {};
     } else {
       pane.className = `shop-pane ${shop.id === appState.activeShopId ? 'active' : ''}`;
       pane.id = `pane_${shop.id}`;
@@ -628,48 +642,9 @@
     }
 
     if (isElectron) {
-      const csUrl = shop.customUrl || plat.url;
-      const hasCS = plat.hasCustomerService !== false;          // v11: 淘宝/小红书 = false（只有订单）
-      const orderUrl = (shop.orderUrl || plat.orderUrl || '').trim(); // v15: 用户自己设的优先
-      const canOrder = !plat.orderUnsupported && orderUrl !== '';
-      if (typeof runtimeShops[shop.id].activeSubTab === 'undefined') {
-        runtimeShops[shop.id].activeSubTab = hasCS ? 'cs' : 'order'; // 默认选中：有客服选客服，否则订单
-      }
-
-      // ── C-1: 横排子标签栏（像浏览器书签，同时只显示一个；切换不重载、不重新登录）──
-      const bar = document.createElement('div');
-      bar.className = 'subtab-bar';
-      bar.id = `subtabbar_${shop.id}`;
-      const mkBtn = (label, key) => {
-        const b = document.createElement('button');
-        b.className = 'subtab-btn' + (runtimeShops[shop.id].activeSubTab === key ? ' active' : '');
-        b.textContent = label;
-        b.dataset.subtab = key;
-        b.addEventListener('click', () => switchShopSubTab(shop, key));
-        return b;
-      };
-      if (hasCS) bar.appendChild(mkBtn('💬 客服', 'cs'));
-      if (canOrder) bar.appendChild(mkBtn('📦 订单', 'order'));
-      pane.appendChild(bar);
-
-      // ── C-2: 子标签视口（两个 webview 常驻，同一 partition 共享 Cookie，切 tab 只切 display）──
-      const viewport = document.createElement('div');
-      viewport.className = 'subtab-viewport';
-      pane.appendChild(viewport);
-      if (hasCS) {
-        const hostCs = document.createElement('div');
-        hostCs.className = 'subtab-pane webview-host' + (runtimeShops[shop.id].activeSubTab === 'cs' ? ' active' : '');
-        hostCs.dataset.subtab = 'cs';
-        hostCs.appendChild(buildShopWebview(`webview_${shop.id}`, csUrl, shop, plat, 'cs'));
-        viewport.appendChild(hostCs);
-      }
-      if (canOrder) {
-        const hostOd = document.createElement('div');
-        hostOd.className = 'subtab-pane webview-host' + (runtimeShops[shop.id].activeSubTab === 'order' ? ' active' : '');
-        hostOd.dataset.subtab = 'order';
-        hostOd.appendChild(buildShopWebview(`webview_order_${shop.id}`, orderUrl, shop, plat, 'order'));
-        viewport.appendChild(hostOd);
-      }
+      // v19: 子标签改成「数据驱动」—— 内置的客服/订单保留，但能改名、改网址、能删掉；
+      //      另外还能自己加任意多个常用页面；页面里点开的链接会变成临时子标签。
+      syncSubTabs(shop, pane);
     } else {
       // 在浏览器在线预览环境中，渲染高保真 1:1 原版客服工作台交互仿真器
       renderSimulatedWorkbench(pane, shop);
@@ -1315,6 +1290,424 @@
 
 
   // ===========================================================================
+  // ============================================================================
+  // v19: 子标签「数据化」
+  //   · 内置的「客服」「订单」照旧，但能改名、能改网址、能删掉（删了可在 ➕ 上右键恢复）
+  //   · 可以自己加任意多个常用页面，长期保存
+  //   · 页面里点开的链接会变成「临时子标签」，跟浏览器标签一样；
+  //     临时子标签不会保存，只有手动保存过的，下次启动才还在
+  // ============================================================================
+  function getShopSubTabs(shop, plat) {
+    const meta = shop.subTabMeta || {};
+    const hidden = Array.isArray(shop.hiddenBuiltins) ? shop.hiddenBuiltins : [];
+    const list = [];
+    if (plat.hasCustomerService !== false && hidden.indexOf('cs') === -1) {
+      list.push({ id: 'cs', name: (meta.cs && meta.cs.name) || '💬 客服', url: shop.customUrl || plat.url, builtin: true, role: 'cs' });
+    }
+    const orderUrl = (shop.orderUrl || plat.orderUrl || '').trim();
+    if (!plat.orderUnsupported && orderUrl !== '' && hidden.indexOf('order') === -1) {
+      list.push({ id: 'order', name: (meta.order && meta.order.name) || '📦 订单', url: orderUrl, builtin: true, role: 'order' });
+    }
+    (Array.isArray(shop.subTabs) ? shop.subTabs : []).forEach(function (t) {
+      if (!t || !t.id) return;
+      list.push({ id: t.id, name: t.name || '🔖 页面', url: t.url || '', builtin: false, role: 'custom' });
+    });
+    return list;
+  }
+
+  function getShopAllTabs(shop, plat) {
+    const list = getShopSubTabs(shop, plat);
+    const rt = runtimeShops[shop.id] || {};
+    (rt.tempTabs || []).forEach(function (t) {
+      list.push({ id: t.id, name: t.name || '🔹 临时', url: t.url || '', builtin: false, role: 'temp' });
+    });
+    return list;
+  }
+
+  function subTabWebviewId(shop, tab) {
+    if (tab.role === 'cs') return 'webview_' + shop.id;
+    if (tab.role === 'order') return 'webview_order_' + shop.id;
+    return 'webview_' + shop.id + '_' + tab.id;
+  }
+
+  function findSubTab(shop, id) {
+    let found = null;
+    (shop.subTabs || []).forEach(function (t) { if (t.id === id) found = t; });
+    if (found) return found;
+    const rt = runtimeShops[shop.id] || {};
+    (rt.tempTabs || []).forEach(function (t) { if (t.id === id) found = t; });
+    return found;
+  }
+
+  function subtabTip(msg, color) {
+    if (typeof showCopyUrlToast === 'function') showCopyUrlToast(msg, color || '#38bdf8');
+    else console.log('[子标签] ' + msg);
+  }
+
+  function shortHost(url) {
+    try {
+      const h = new URL(url).hostname.replace(/^www\./, '');
+      return h || String(url || '').slice(0, 30);
+    } catch (e) { return String(url || '').slice(0, 30); }
+  }
+
+  // 建 / 修 一整个店铺的子标签区。核心原则：
+  //   已经存在的网页容器绝不重新挂载（一挪动 Electron 就会把网页刷新掉、登录也没了）
+  function syncSubTabs(shop, paneOpt) {
+    const pane = paneOpt || document.getElementById('pane_' + shop.id);
+    if (!pane) return;
+    const plat = platformMap[shop.platformId] || platforms[0];
+    const rt = runtimeShops[shop.id] || (runtimeShops[shop.id] = {});
+    rt.hosts = rt.hosts || {};
+    const tabs = getShopAllTabs(shop, plat);
+    if (!tabs.length) return;
+
+    // ① 当前选中的还在不在；不在就回到第一个
+    if (!tabs.some(function (t) { return t.id === rt.activeSubTab; })) rt.activeSubTab = tabs[0].id;
+
+    // ② 已经被删掉的子标签：把它的容器摘掉
+    const want = {};
+    tabs.forEach(function (t) { want[t.id] = true; });
+    Object.keys(rt.hosts).forEach(function (id) {
+      if (!want[id]) {
+        const h = rt.hosts[id];
+        if (h && h.parentNode) h.parentNode.removeChild(h);
+        delete rt.hosts[id];
+      }
+    });
+
+    // ③ 重画标签栏（内容区不动）
+    const oldBar = pane.querySelector('.subtab-bar');
+    const bar = document.createElement('div');
+    bar.className = 'subtab-bar';
+    bar.id = 'subtabbar_' + shop.id;
+    tabs.forEach(function (tab) { bar.appendChild(buildSubTabButton(shop, tab)); });
+    const addBtn = document.createElement('button');
+    addBtn.className = 'subtab-btn subtab-add';
+    addBtn.textContent = '➕';
+    addBtn.title = '加一个子标签（把常用页面固定在这里）';
+    addBtn.addEventListener('click', function () { showAddSubTabForm(shop, addBtn); });
+    addBtn.addEventListener('contextmenu', function (e) { e.preventDefault(); showRestoreBuiltinMenu(e.clientX, e.clientY, shop); });
+    bar.appendChild(addBtn);
+    if (oldBar && oldBar.parentNode) oldBar.parentNode.replaceChild(bar, oldBar);
+    else pane.appendChild(bar);
+
+    // ④ 补齐新增子标签的容器
+    let viewport = pane.querySelector('.subtab-viewport');
+    if (!viewport) {
+      viewport = document.createElement('div');
+      viewport.className = 'subtab-viewport';
+      pane.appendChild(viewport);
+    }
+    tabs.forEach(function (tab) {
+      let host = rt.hosts[tab.id];
+      if (!host) {
+        host = document.createElement('div');
+        rt.hosts[tab.id] = host;
+        viewport.appendChild(host);
+        // 内置客服/订单立刻建（要收消息、要数订单）；自定义的等第一次点开再建，省得开一堆网页卡顿
+        if (tab.role === 'cs' || tab.role === 'order') {
+          host.appendChild(buildShopWebview(subTabWebviewId(shop, tab), tab.url, shop, plat, tab.role));
+        }
+      }
+      host.className = 'subtab-pane webview-host' + (rt.activeSubTab === tab.id ? ' active' : '');
+      host.dataset.subtab = tab.id;
+      if (host.parentNode !== viewport) viewport.appendChild(host);
+    });
+
+    ensureActiveSubTabLoaded(shop, plat);
+    applySubTabVisibility(shop);
+  }
+
+  function buildSubTabButton(shop, tab) {
+    const rt = runtimeShops[shop.id] || {};
+    const b = document.createElement('button');
+    b.className = 'subtab-btn' + (rt.activeSubTab === tab.id ? ' active' : '') + (tab.role === 'temp' ? ' temp' : '');
+    b.textContent = tab.name;
+    b.dataset.subtab = tab.id;
+    b.title = (tab.name || '') + (tab.url ? ('\n' + tab.url) : '') + '\n\n（点右键：重命名 / 改网址 / 删除）';
+    b.addEventListener('click', function () { switchShopSubTab(shop, tab.id); });
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); showSubTabMenu(e.clientX, e.clientY, shop, tab); });
+    return b;
+  }
+
+  function ensureActiveSubTabLoaded(shop, plat) {
+    const rt = runtimeShops[shop.id];
+    if (!rt || !rt.hosts) return;
+    const tabs = getShopAllTabs(shop, plat);
+    let tab = null;
+    for (const t of tabs) { if (t.id === rt.activeSubTab) { tab = t; break; } }
+    if (!tab) return;
+    const host = rt.hosts[tab.id];
+    if (!host) return;
+    if (host.querySelector('webview')) return; // 已经建过了，别重复建
+    if (!tab.url) {
+      host.innerHTML = '<div class="subtab-empty">这个子标签还没有网址。<br>在它上面点右键 → 「✏️ 修改网址」</div>';
+      return;
+    }
+    host.innerHTML = '';
+    host.appendChild(buildShopWebview(subTabWebviewId(shop, tab), tab.url, shop, plat, tab.role === 'temp' ? 'custom' : tab.role));
+    setTimeout(fitWebviews, 120);
+  }
+
+  function openTempSubTab(shop, url) {
+    if (!shop) return;
+    if (!/^https?:\/\//i.test(url || '')) return;
+    const rt = runtimeShops[shop.id] || (runtimeShops[shop.id] = {});
+    rt.tempTabs = rt.tempTabs || [];
+    const id = 'tmp' + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36);
+    rt.tempTabs.push({ id: id, name: '🔹 ' + shortHost(url), url: url });
+    rt.activeSubTab = id;
+    syncSubTabs(shop);
+    subtabTip('新开了一个临时页面：「' + shortHost(url) + '」\n临时页面不会保存 —— 想让它以后一直在这儿，在这个标签上点右键 → 「💾 保存为常驻」。');
+  }
+
+  function showSubTabMenu(x, y, shop, tab) {
+    const items = [];
+    items.push({ label: '✏️ 重命名', fn: function () { renameSubTab(shop, tab); } });
+    items.push({ label: '🔗 修改网址', fn: function () { editSubTabUrl(shop, tab); } });
+    if (tab.role === 'temp') items.push({ label: '💾 保存为常驻（下次启动还在）', fn: function () { saveTempSubTab(shop, tab); } });
+    items.push({ label: tab.builtin ? '🗑 删掉这个内置页' : '🗑 删除', fn: function () { deleteSubTab(shop, tab); } });
+    showPopupMenu(x, y, items);
+  }
+
+  function showRestoreBuiltinMenu(x, y, shop) {
+    const hidden = Array.isArray(shop.hiddenBuiltins) ? shop.hiddenBuiltins : [];
+    if (!hidden.length) { subtabTip('内置的「客服」「订单」页都还在，没有被删掉。'); return; }
+    const items = hidden.map(function (id) {
+      return {
+        label: '↩ 恢复内置「' + (id === 'cs' ? '客服' : '订单') + '」页',
+        fn: function () {
+          shop.hiddenBuiltins = hidden.filter(function (h) { return h !== id; });
+          persistState();
+          syncSubTabs(shop);
+          subtabTip('已恢复。', '#10b981');
+        }
+      };
+    });
+    showPopupMenu(x, y, items);
+  }
+
+  function showPopupMenu(x, y, items) {
+    closePopupMenu();
+    const m = document.createElement('div');
+    m.id = 'subtabPopupMenu';
+    m.className = 'subtab-menu';
+    items.forEach(function (it) {
+      const b = document.createElement('button');
+      b.className = 'subtab-menu-item';
+      b.textContent = it.label;
+      b.addEventListener('click', function () { closePopupMenu(); setTimeout(it.fn, 0); });
+      m.appendChild(b);
+    });
+    document.body.appendChild(m);
+    const w = m.offsetWidth || 220, h = m.offsetHeight || 120;
+    m.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 8)) + 'px';
+    m.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 8)) + 'px';
+    setTimeout(function () { document.addEventListener('mousedown', onDocDown); }, 0);
+    function onDocDown(e) {
+      if (m.contains(e.target)) return;
+      closePopupMenu();
+      document.removeEventListener('mousedown', onDocDown);
+    }
+  }
+
+  function closePopupMenu() {
+    const m = document.getElementById('subtabPopupMenu');
+    if (m) m.remove();
+  }
+
+  function renameSubTab(shop, tab) {
+    const nv = window.prompt('给这个子标签起个名字：', tab.name || '');
+    if (nv === null) return;
+    const name = String(nv).trim() || tab.name;
+    if (tab.builtin) {
+      shop.subTabMeta = shop.subTabMeta || {};
+      shop.subTabMeta[tab.id] = shop.subTabMeta[tab.id] || {};
+      shop.subTabMeta[tab.id].name = name;
+    } else {
+      const t = findSubTab(shop, tab.id);
+      if (t) t.name = name;
+    }
+    persistState();
+    syncSubTabs(shop);
+  }
+
+  function editSubTabUrl(shop, tab) {
+    const nv = window.prompt('这个子标签要打开的网址：', tab.url || '');
+    if (nv === null) return;
+    const url = String(nv).trim();
+    if (!url) { subtabTip('网址不能为空，没有改动。', '#f97316'); return; }
+    if (tab.role === 'cs') shop.customUrl = url;
+    else if (tab.role === 'order') shop.orderUrl = url;
+    else { const t = findSubTab(shop, tab.id); if (t) t.url = url; }
+    persistState();
+    const rt = runtimeShops[shop.id] || {};
+    const host = (rt.hosts || {})[tab.id];
+    const wv = host ? host.querySelector('webview') : null;
+    if (wv && typeof wv.loadURL === 'function') { try { wv.loadURL(url); } catch (e) {} }
+    syncSubTabs(shop);
+    subtabTip('网址已改，正在打开新网址。', '#10b981');
+  }
+
+  function deleteSubTab(shop, tab) {
+    const msg = tab.builtin
+      ? '确定删掉内置的「' + tab.name + '」页吗？\n（删错了没关系：在「➕」按钮上点右键就能恢复）'
+      : '确定删除子标签「' + tab.name + '」吗？';
+    if (!window.confirm(msg)) return;
+    if (tab.builtin) {
+      shop.hiddenBuiltins = (shop.hiddenBuiltins || []).concat([tab.id]);
+    } else {
+      shop.subTabs = (shop.subTabs || []).filter(function (t) { return t.id !== tab.id; });
+      const rt = runtimeShops[shop.id] || {};
+      rt.tempTabs = (rt.tempTabs || []).filter(function (t) { return t.id !== tab.id; });
+    }
+    persistState();
+    syncSubTabs(shop);
+  }
+
+  function saveTempSubTab(shop, tab) {
+    const rt = runtimeShops[shop.id] || {};
+    const host = (rt.hosts || {})[tab.id];
+    const wv = host ? host.querySelector('webview') : null;
+    let url = tab.url;
+    if (wv && typeof wv.getURL === 'function') { try { url = wv.getURL() || url; } catch (e) {} }
+    const name = String(tab.name || '').replace(/^\s*🔹\s*/, '📌 ') || ('📌 ' + shortHost(url));
+    shop.subTabs = (shop.subTabs || []).filter(function (t) { return t.id !== tab.id; });
+    shop.subTabs.push({ id: tab.id, name: name, url: url });
+    rt.tempTabs = (rt.tempTabs || []).filter(function (t) { return t.id !== tab.id; });
+    persistState();
+    syncSubTabs(shop);
+    subtabTip('已保存！「' + name + '」以后每次启动都会在这儿。', '#10b981');
+  }
+
+  function currentSubTabUrl(shop) {
+    const pane = document.getElementById('pane_' + shop.id);
+    if (!pane) return '';
+    const host = pane.querySelector('.subtab-pane.active');
+    const wv = host ? host.querySelector('webview') : null;
+    if (wv && typeof wv.getURL === 'function') { try { return wv.getURL() || ''; } catch (e) { return ''; } }
+    return '';
+  }
+
+  function showAddSubTabForm(shop, anchorBtn) {
+    const old = document.getElementById('subtabAddForm');
+    if (old) { old.remove(); return; }
+    const f = document.createElement('div');
+    f.id = 'subtabAddForm';
+    f.className = 'subtab-form';
+    f.innerHTML =
+      '<div class="sf-title">加一个子标签</div>'
+      + '<label class="sf-row"><span>名称</span><input id="sfName" type="text" placeholder="例如：📊 数据罗盘"></label>'
+      + '<label class="sf-row"><span>网址</span><input id="sfUrl" type="text" placeholder="https://..."></label>'
+      + '<label class="sf-check"><input id="sfKeep" type="checkbox" checked> 长期保存（下次启动还在）</label>'
+      + '<div class="sf-btns"><button id="sfCancel" type="button" class="sf-btn">取消</button>'
+      + '<button id="sfOk" type="button" class="sf-btn primary">确定</button></div>';
+    document.body.appendChild(f);
+    const r = anchorBtn.getBoundingClientRect();
+    f.style.left = Math.max(4, Math.min(r.left, window.innerWidth - 336)) + 'px';
+    f.style.top = (r.bottom + 6) + 'px';
+    const nameEl = document.getElementById('sfName');
+    const urlEl = document.getElementById('sfUrl');
+    const keepEl = document.getElementById('sfKeep');
+    const cur = currentSubTabUrl(shop); // 把当前正在看的网址先填上，省得自己复制
+    if (cur) urlEl.value = cur;
+    setTimeout(function () { try { nameEl.focus(); } catch (e) {} }, 30);
+    document.getElementById('sfCancel').addEventListener('click', function () { f.remove(); });
+    document.getElementById('sfOk').addEventListener('click', function () {
+      const url = String(urlEl.value || '').trim();
+      if (!url) { subtabTip('请先填网址。', '#f97316'); return; }
+      if (!/^https?:\/\//i.test(url)) { subtabTip('网址要以 http:// 或 https:// 开头。', '#f97316'); return; }
+      const name = String(nameEl.value || '').trim() || ('🔖 ' + shortHost(url));
+      const id = 'c' + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36);
+      const rt = runtimeShops[shop.id] || (runtimeShops[shop.id] = {});
+      if (keepEl.checked) {
+        shop.subTabs = (shop.subTabs || []).concat([{ id: id, name: name, url: url }]);
+        persistState();
+      } else {
+        rt.tempTabs = (rt.tempTabs || []).concat([{ id: id, name: name, url: url }]);
+      }
+      rt.activeSubTab = id;
+      f.remove();
+      syncSubTabs(shop);
+      subtabTip(keepEl.checked
+        ? ('已添加「' + name + '」，并且已经保存，下次启动还在。')
+        : ('已临时打开「' + name + '」。临时页面重启后会消失 —— 想留下就在它上面点右键 → 💾 保存为常驻。'), '#10b981');
+    });
+    setTimeout(function () {
+      const onDoc = function (e) {
+        if (f.contains(e.target) || e.target === anchorBtn) return;
+        f.remove();
+        document.removeEventListener('mousedown', onDoc);
+      };
+      document.addEventListener('mousedown', onDoc);
+    }, 0);
+  }
+
+  // ── v19: 订单页「读取中」的诊断。点仪表盘上显示「读取中」的卡片，
+  //    会自动把页面情况复制到剪贴板，发给云端小助手就能按真实页面改。──
+  const orderDebugWanted = {};
+  function requestOrderDebug(shopId) {
+    if (!isElectron) return;
+    orderDebugWanted[shopId] = Date.now();
+    const wv = document.getElementById('webview_order_' + shopId);
+    if (wv && typeof wv.send === 'function') { try { wv.send('cs-order-debug-request', {}); } catch (e) {} }
+  }
+
+  function handleOrderDebug(shopId, d) {
+    if (!orderDebugWanted[shopId]) return;
+    if (Date.now() - orderDebugWanted[shopId] > 10000) { delete orderDebugWanted[shopId]; return; }
+    delete orderDebugWanted[shopId];
+    const shop = (appState.shops || []).filter(function (s) { return s.id === shopId; })[0];
+    const plat = shop ? (platformMap[shop.platformId] || platforms[0]) : null;
+    const lines = [
+      '【订单页诊断】' + (plat ? plat.shortName : shopId),
+      '当前网址：' + (d.url || '(读不到)'),
+      '页面标题：' + (d.title || '(无)'),
+      '是否停在登录页：' + (d.loginRequired ? '是' : '否'),
+      '页面上有没有「待发货」这类字：' + (d.keyword ? ('有 →「' + d.keyword + '」') : '【没有】'),
+      '那块文字是：' + (d.snippet || '(无)'),
+      '正文长度：' + (d.bodyLen || 0) + ' 字；内嵌框架 ' + (d.iframes || 0) + ' 个（能读到 ' + (d.sameOriginIframes || 0) + ' 个）',
+      '最近读到的数字：' + (typeof d.lastCount === 'number' ? d.lastCount : '?')
+    ];
+    const txt = lines.join('\n');
+    const extra = '\n\n（这段已经复制到剪贴板了，直接发给云端小助手，他就能按你真实的页面来改。）';
+    const done = copyTextToClipboard(txt + extra);
+    subtabTip(txt + (done ? extra : '\n\n（复制失败，请把上面这段手动抄给我）'), '#f59e0b');
+  }
+
+  // v19: 主进程告诉渲染进程「有个链接被点开了」→ 变成临时子标签
+  function bindPopupTempTabs() {
+    if (!isElectron || !window.csElectronAPI || typeof window.csElectronAPI.onPopupUrl !== 'function') return;
+    window.csElectronAPI.onPopupUrl(function (data) {
+      const url = (data && data.url) || '';
+      if (!url) return;
+      let shop = null;
+      const wcId = data.webContentsId;
+      if (typeof wcId === 'number') {
+        let sid = '';
+        document.querySelectorAll('webview').forEach(function (wv) {
+          if (sid) return;
+          let id = null;
+          try { id = wv.getWebContentsId ? wv.getWebContentsId() : null; } catch (e) {}
+          if (id !== wcId) return;
+          sid = String(wv.id || '').replace(/^webview_order_/, '').replace(/^webview_/, '');
+        });
+        if (sid) {
+          // 取前缀匹配里最长的那个店铺 id，避免「shop1」和「shop12」认错
+          let best = null;
+          (appState.shops || []).forEach(function (s) {
+            if (sid.indexOf(s.id) !== 0) return;
+            if (!best || String(s.id).length > String(best.id).length) best = s;
+          });
+          shop = best;
+        }
+      }
+      if (!shop) shop = getActiveShop();
+      openTempSubTab(shop, url);
+    });
+  }
+
   // v11 Phase D: 订单仪表盘渲染 + 订单数字更新处理
   // ===========================================================================
   function handleOrderCountUpdate(shopId, payload) {
@@ -1405,7 +1798,12 @@
         + (hasData ? total + ' 单待发货' : (needLogin ? '未登录' : '读取中…')) + '</em></div>';
       card.addEventListener('click', () => {
         const shop = appState.shops.find((s) => s.platformId === plat.id);
-        if (shop) { switchToShopTab(shop.id); switchShopSubTab(shop, 'order'); }
+        if (shop) {
+          switchToShopTab(shop.id);
+          switchShopSubTab(shop, 'order');
+          // v19: 还在「读取中」的话，顺手把页面情况复制到剪贴板，发给云端小助手就能定位
+          if (!hasData && !needLogin) requestOrderDebug(shop.id);
+        }
         toggleOrderDashboard(false);
       });
       list.appendChild(card);
