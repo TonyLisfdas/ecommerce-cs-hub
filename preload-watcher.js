@@ -424,26 +424,77 @@ const { ipcRenderer } = require('electron');
     return d;
   }
 
+  // v20: 以前只在「第一次」上报，之后只要读到 -1 就再也不上报了 ——
+  //      结果页面还没渲染完那一次扫空，就被永久卡在「读取中」。
+  //      现在改成：数字一变就上报；连续失败并且已经过了预热期，才认定「读不到」。
+  let lastSentCount = null;
+  let orderFailStreak = 0;
+  let firstScanAt = 0;
+
   function checkOrderCount() {
+    if (!firstScanAt) firstScanAt = Date.now();
     const c = scanOrderPendingCount();
     lastOrderCount = c;
-    // v18: 停在登录页 -> 上报 -2（仪表盘显示「未登录」），别再一直显示「读取中」
-    const needLogin = (c < 0) && csOrderLoginRequired();
-    if (needLogin) {
-      ipcRenderer.sendToHost('cs-order-update', { count: -2, loginRequired: true, timestamp: Date.now() });
-      orderSentOnce = true;
+
+    // 停在登录页 -> 上报 -2（仪表盘显示「未登录」）
+    if (c < 0 && csOrderLoginRequired()) {
+      if (lastSentCount !== -2) {
+        ipcRenderer.sendToHost('cs-order-update', { count: -2, loginRequired: true, timestamp: Date.now() });
+        lastSentCount = -2;
+      }
+      orderFailStreak = 0;
       return;
     }
-    // 首次读到有效数字也要上报一次，让仪表盘显示
-    if (c >= 0 || !orderSentOnce) {
-      ipcRenderer.sendToHost('cs-order-update', { count: c, timestamp: Date.now() });
-      orderSentOnce = true;
+
+    if (c >= 0) {
+      orderFailStreak = 0;
+      if (lastSentCount !== c) {
+        ipcRenderer.sendToHost('cs-order-update', { count: c, timestamp: Date.now() });
+        lastSentCount = c;
+      }
+      return;
     }
+
+    // c < 0 且不是登录页：连续失败 3 次、并且已经过了 35 秒预热期，才显示「读取中」
+    orderFailStreak++;
+    if (orderFailStreak >= 3 && (Date.now() - firstScanAt) > 35000 && lastSentCount !== -1) {
+      ipcRenderer.sendToHost('cs-order-update', { count: -1, timestamp: Date.now() });
+      lastSentCount = -1;
+    }
+  }
+
+  // v20: 抖店这类平台的「待发货」页签要点一下才出来，网址里没有参数，刷新就丢了。
+  //      扫不到数字的时候，自动帮忙点一次。
+  function csTryClickPendingTab() {
+    if (window.__csPendingTabTried) return;
+    if (typeof lastOrderCount === 'number' && lastOrderCount >= 0) return; // 已经读到数字，不用点
+    try {
+      const words = ['待发货', '待发货订单'];
+      const nodes = document.querySelectorAll('li, a, button, [role="tab"], [class*="tab"], [class*="menu-item"]');
+      for (const el of nodes) {
+        const txt = String((el && (el.innerText || el.textContent)) || '').trim();
+        if (!txt || txt.length > 12) continue;
+        let hit = false;
+        for (const w of words) { if (txt.indexOf(w) >= 0) { hit = true; break; } }
+        if (!hit) continue;
+        const st = window.getComputedStyle(el);
+        if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 20 || r.height < 10) continue;
+        window.__csPendingTabTried = true;
+        el.click();
+        setTimeout(checkOrderCount, 2500);
+        return;
+      }
+    } catch (e) {}
   }
 
   // v18: 京东订单页第一次打开常出现「数据异常，请刷新重试」，自动刷新一次即可。
   //      只重试一次，避免死循环。
   function csAutoReloadOnce() {
+    // v20: 只给京东用。抖店等平台的「待发货」是要自己点页签才切过去的（网址里没有 tab 参数），
+    //      一刷新就退回默认页，待发货数字就没了 —— 所以别的平台一律不自动刷新。
+    if (!platformConfig || platformConfig.platformId !== 'jd') return;
     if (window.__csReloadedOnce) return;
     setTimeout(() => {
       try {
@@ -532,8 +583,11 @@ const { ipcRenderer } = require('electron');
     platformConfig = config;
     // v11 Phase D: 订单页 webview 启动 90s 待发货数字轮扫（客服页无 orderUnreadKeyword 自动跳过）
     if (config && Array.isArray(config.orderUnreadKeyword) && config.orderUnreadKeyword.length) {
-      checkOrderCount();
+      // v20: SPA 页面渲染慢，只在 dom-ready 扫一次经常扫空。前 30 秒多扫几次。
+      [0, 4000, 9000, 18000, 30000].forEach(function (ms) { setTimeout(checkOrderCount, ms); });
       setInterval(checkOrderCount, 90000);
+      // v20: 扫不到数字时，自动点一下「待发货」页签（抖店等平台必须要点）
+      [6000, 20000].forEach(function (ms) { setTimeout(csTryClickPendingTab, ms); });
     }
     if (config && config.cleanModeEnabled && config.cleanCss) {
       applyCleanMode(true, config.cleanCss);

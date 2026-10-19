@@ -11,6 +11,7 @@ const PLATFORMS = [
     id: 'douyin',
     hasCustomerService: true,
     orderUrl: 'https://fxg.jinritemai.com/ffa/morder/order/list',
+    orderUrlVersion: 1, // v20: 抖店：网址不变，但加上版本号
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '抖店·飞鸽',
     fullName: '抖店飞鸽客服工作台',
@@ -52,7 +53,8 @@ const PLATFORMS = [
   {
     id: 'pinduoduo',
     hasCustomerService: true,
-    orderUrl: 'https://mms.pinduoduo.com/orders/order_list.html',
+    orderUrl: 'https://mms.pinduoduo.com/orders/list?tab=1',
+    orderUrlVersion: 1, // v20: 拼多多：用户实测的待发货页（tab=1）
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '拼多多·多多客服',
     fullName: '拼多多网页版客服工作台',
@@ -96,7 +98,8 @@ const PLATFORMS = [
   {
     id: 'taobao',
     hasCustomerService: false, // v11: 客服已删，仅保留订单
-    orderUrl: 'https://trade.taobao.com/trade/itemlist/list_sold_items.htm',
+    orderUrl: 'https://myseller.taobao.com/home.htm/trade-platform/tp/sold',
+    orderUrlVersion: 1, // v20: 淘宝：用户实测的已卖出宝贝页
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '淘宝·卖家中心',
     fullName: '淘宝/天猫千牛客服接待中心',
@@ -139,7 +142,8 @@ const PLATFORMS = [
   {
     id: 'weixin',
     hasCustomerService: true,
-    orderUrl: 'https://store.weixin.qq.com/shop/order',
+    orderUrl: 'https://store.weixin.qq.com/shop/order/list',
+    orderUrlVersion: 1, // v20: 微信小店：用户实测的订单列表页
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '微信小店·客服',
     fullName: '微信小店 / 视频号小店客服工作台',
@@ -183,7 +187,8 @@ const PLATFORMS = [
   {
     id: 'kuaishou',
     hasCustomerService: true,
-    orderUrl: 'https://s.kwaixiaodian.com/zone/order/order-list',
+    orderUrl: 'https://s.kwaixiaodian.com/zone/order/list',
+    orderUrlVersion: 1, // v20: 快手：用户实测的订单列表页
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '快手·小店客服',
     fullName: '快手小店客服IM工作台',
@@ -223,7 +228,8 @@ const PLATFORMS = [
   {
     id: 'xiaohongshu',
     hasCustomerService: false, // v11: 客服已删，仅保留订单
-    orderUrl: 'https://ark.xiaohongshu.com/',
+    orderUrl: 'https://ark.xiaohongshu.com/app-order/order/query',
+    orderUrlVersion: 1, // v20: 小红书：用户实测的订单查询页
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '小红书·订单',
     fullName: '小红书千帆客服工作台',
@@ -266,7 +272,8 @@ const PLATFORMS = [
   {
     id: 'jd',
     hasCustomerService: true,
-    orderUrl: 'https://shop.jd.com/', // v15: 原 /oms/order-manage 实测 404
+    orderUrl: 'https://shop.jd.com/jdm/trade/orders/order-list?tabType=waitOut',
+    orderUrlVersion: 1, // v20: 用户实测的待发货页(tabType=waitOut)
     orderUnreadKeyword: ['待发货', '待发货订单', '未发货', '待处理发货'], // v11 Phase D: 订单页「待发货」数字关键词
     name: '京东·咚咚客服',
     fullName: '京东咚咚商家网页版客服工作台',

@@ -1297,6 +1297,17 @@
   //   · 页面里点开的链接会变成「临时子标签」，跟浏览器标签一样；
   //     临时子标签不会保存，只有手动保存过的，下次启动才还在
   // ============================================================================
+  // v20: 取订单页网址。平台官方的「待发货」网址升级过一次（用户实测提供），
+  //      如果用户手动设的网址是在升级之前设的，就用新的官方网址，
+  //      免得一直停在一个早就不对的地址上。
+  function getOrderUrl(shop, plat) {
+    const pv = Number(plat.orderUrlVersion || 0);
+    const sv = Number(shop.orderUrlVersion || 0);
+    const saved = String(shop.orderUrl || '').trim();
+    if (saved && sv >= pv) return saved;
+    return (String(plat.orderUrl || '').trim() || saved);
+  }
+
   function getShopSubTabs(shop, plat) {
     const meta = shop.subTabMeta || {};
     const hidden = Array.isArray(shop.hiddenBuiltins) ? shop.hiddenBuiltins : [];
@@ -1304,7 +1315,7 @@
     if (plat.hasCustomerService !== false && hidden.indexOf('cs') === -1) {
       list.push({ id: 'cs', name: (meta.cs && meta.cs.name) || '💬 客服', url: shop.customUrl || plat.url, builtin: true, role: 'cs' });
     }
-    const orderUrl = (shop.orderUrl || plat.orderUrl || '').trim();
+      const orderUrl = getOrderUrl(shop, plat); // v20: 平台官方「待发货」网址修正（用户实测）
     if (!plat.orderUnsupported && orderUrl !== '' && hidden.indexOf('order') === -1) {
       list.push({ id: 'order', name: (meta.order && meta.order.name) || '📦 订单', url: orderUrl, builtin: true, role: 'order' });
     }
@@ -1913,6 +1924,7 @@
     if (!url || url === "about:blank") { tip("当前页面还没有网址。请先登录，进到「订单」那一页，再点这个按钮。", "#f97316"); return; }
     const plat = platformMap[shop.platformId] || platforms[0];
     shop.orderUrl = url;
+    shop.orderUrlVersion = Number(plat.orderUrlVersion || 0); // v20: 标记为「用户自己设的」，别被平台网址升级盖掉
     // 小红书 / 淘宝 这类「只有订单、没有客服」的平台，主入口也一起改，下次启动直接进
     if (plat && plat.hasCustomerService === false) shop.customUrl = url;
     persistState();
