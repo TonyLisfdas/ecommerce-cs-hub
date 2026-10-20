@@ -310,10 +310,34 @@ const { ipcRenderer } = require('electron');
 
   // v21: 递归收集所有能读到的文档（页面正文 + 内嵌框架，最多 3 层）。
   //      很多商家后台是「页面套框架、框架里再套框架」，只扫一层永远读不到。
+  // v24: 钻进 shadow DOM。
+  //      网页用了 Web Components / 微前端的时候（微信小店很可能就是），
+  //      内容被封在 shadow root 里面，querySelectorAll 和 TreeWalker 都进不去，
+  //      扫描就会一无所获。所以要自己一层层钻进去。
+  function collectShadowRoots(root, depth, out, seen) {
+    if (!root || depth > 3) return;
+    let els = [];
+    try { els = Array.prototype.slice.call(root.querySelectorAll('*')); } catch (e) { return; }
+    for (const el of els) {
+      let sr = null;
+      try { sr = el.shadowRoot; } catch (e) { sr = null; }
+      if (!sr || seen.indexOf(sr) >= 0) continue;
+      seen.push(sr);
+      out.push(sr);
+      collectShadowRoots(sr, depth + 1, out, seen);
+    }
+  }
+
   function collectReadableDocs(depth, seen) {
     const out = [];
     if (depth > 3) return out;
     try { if (document.body) out.push(document.body); } catch (e) {}
+    // v24: 主文档里的 shadow DOM
+    try {
+      const srs = [];
+      collectShadowRoots(document, 0, srs, []);
+      for (const sr of srs) { if (out.indexOf(sr) < 0) out.push(sr); }
+    } catch (e) {}
     let frames = [];
     try { frames = Array.prototype.slice.call(document.querySelectorAll('iframe')); } catch (e) {}
     for (const f of frames) {
@@ -331,6 +355,12 @@ const { ipcRenderer } = require('electron');
         if (gd && gd.body && seen.indexOf(gd) < 0) { seen.push(gd); inner.push(gd.body); }
       }
       out.push(d.body);
+      // v24: 内嵌框架里也可能有 shadow DOM
+      try {
+        const srs = [];
+        collectShadowRoots(d, 0, srs, []);
+        for (const sr of srs) { if (out.indexOf(sr) < 0) out.push(sr); }
+      } catch (e) {}
       for (const b of inner) { if (out.indexOf(b) < 0) out.push(b); }
     }
     return out;
@@ -563,6 +593,36 @@ const { ipcRenderer } = require('electron');
       if (d.hints.length >= 40) break;
     }
 
+    // v24: 客服状态是怎么读出来的 —— 读得准不准，一眼就能看出来
+    d.agentStatus = null;
+    try { d.agentStatus = scanAgentStatus(); } catch (e) {}
+    d.statusCandidates = [];
+    try {
+      const seenS = {};
+      const allS = Array.prototype.slice.call(document.querySelectorAll('span,div,em,i,b,li'));
+      for (const el of allS) {
+        if (d.statusCandidates.length >= 20) break;
+        const t = visibleText(el);
+        if (!t || t.length > 10) continue;
+        const tt = t.trim();
+        let hit = '';
+        for (const g of CS_STATUS_WORDS) { for (const w of g.words) { if (tt.indexOf(w) >= 0) { hit = w; break; } } if (hit) break; }
+        if (!hit || seenS[tt]) continue;
+        seenS[tt] = 1;
+        d.statusCandidates.push(tt);
+      }
+    } catch (e) {}
+    // v24: shadow DOM（Web Components）的情况 —— 微信小店很可能把内容封在这里面
+    d.shadows = [];
+    try {
+      const srs = [];
+      collectShadowRoots(document, 0, srs, []);
+      for (let i = 0; i < srs.length && i < 10; i++) {
+        let t = '';
+        try { t = String(srs[i].textContent || '').replace(/\s+/g, ' '); } catch (e) {}
+        d.shadows.push({ len: t.length, text: t.slice(0, 300) });
+      }
+    } catch (e) {}
     // v22: 把每个内嵌框架的来历也报出来。微信小店的订单列表就装在里面，
     //      可一直读到的是空的 —— 得知道它的网址和类名才有的放矢。
     d.iframeInfo = [];
@@ -774,6 +834,103 @@ const { ipcRenderer } = require('electron');
     window.__csNoContextMenu = !(payload && payload.enabled !== false);
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // v24: 主标签上那颗小圆点的真实状态
+  //   原来那颗点是死的，永远绿色，不管实际状态。
+  //   现在每个网页自己报：
+  //     离线(灰) = 这个页面停在登录页（掉线了，得重新登录）
+  //     忙碌(红) = 有客人等着回 / 有订单等着发
+  //     在线(绿) = 正常，没有待处理的
+  // ─────────────────────────────────────────────────────────────────────────
+  // 各平台后台里「客服自己设的」状态，每家写法都不一样，只能按页面上出现的词来认。
+  // 以后发现哪家用了别的词，往这个表里加一行就行。
+  const CS_STATUS_WORDS = [
+    { st: 'offline', words: ['离线', '未登录', '下班', '打烊', '停止接待', '未上班', '已停止', '不接待', '休息'] },
+    { st: 'busy',    words: ['忙碌', '离开', '挂起', '暂停接待', '小休', '暂离', '休息中', '勿扰', '繁忙'] },
+    { st: 'online',  words: ['在线', '接待中', '上班', '营业中', '空闲', '可接待'] }
+  ];
+
+  // 在页面上找「客服自己设的」那个状态
+  function scanAgentStatus() {
+    // ① 优先找带状态类名的控件（最准）
+    let nodes = [];
+    try {
+      nodes = Array.prototype.slice.call(document.querySelectorAll(
+        '[class*="status"],[class*="state"],[class*="online"],[class*="busy"],[class*="away"],[id*="status"],[id*="state"]'
+      ));
+    } catch (e) { nodes = []; }
+    for (const el of nodes) {
+      const t = visibleText(el);
+      if (!t || t.length > 20) continue;
+      let rect = null;
+      try { rect = el.getBoundingClientRect(); } catch (e) {}
+      if (rect && (rect.width < 1 || rect.height < 1)) continue;
+      for (const g of CS_STATUS_WORDS) {
+        for (const w of g.words) {
+          if (t.indexOf(w) >= 0) {
+            return { st: g.st, word: w, where: '状态控件「' + String(el.className || '').slice(0, 30) + '」' };
+          }
+        }
+      }
+    }
+    // ② 退而求其次：全页找孤零零一个状态词的小元素
+    let all = [];
+    try { all = Array.prototype.slice.call(document.querySelectorAll('span,div,em,i,b,a,button,li')); } catch (e) { return null; }
+    for (const el of all) {
+      if (el.children && el.children.length > 0) continue;
+      const t = visibleText(el);
+      if (!t || t.length > 6) continue;
+      // 尺寸为 0 = 还没渲染出来（或者是藏起来的），不能算。
+      //  上面那条路跳过了它，这条路也不能把它捡回来。
+      let r2 = null;
+      try { r2 = el.getBoundingClientRect(); } catch (e) {}
+      if (r2 && (r2.width < 1 || r2.height < 1)) continue;
+      const tt = t.trim();
+      for (const g of CS_STATUS_WORDS) {
+        for (const w of g.words) {
+          if (tt === w) return { st: g.st, word: w, where: '页面文字「' + tt + '」' };
+        }
+      }
+    }
+    return null;
+  }
+
+  let lastStatusSent = null;
+  function csReportStatus() {
+    if (!platformConfig) return;
+    let st = null, src = '';
+
+    // ① 先看平台后台里客服自己设的状态
+    try {
+      const a = scanAgentStatus();
+      if (a && a.st) { st = a.st; src = a.where + ' 里写着「' + a.word + '」'; }
+    } catch (e) {}
+
+    // ② 页面上没找到状态控件，就退回「有没有活儿没干完」
+    if (!st) {
+      let off = false;
+      try { off = typeof csOrderLoginRequired === 'function' && csOrderLoginRequired(); } catch (e) {}
+      if (off) {
+        st = 'offline'; src = '这个页面停在登录页（掉线了）';
+      } else {
+        st = 'online'; src = '没在页面上找到状态控件，按「有没有活儿」算的';
+        const isOrderPage = Array.isArray(platformConfig.orderUnreadKeyword) && platformConfig.orderUnreadKeyword.length > 0;
+        try {
+          if (isOrderPage) {
+            if (typeof lastOrderCount === 'number' && lastOrderCount > 0) { st = 'busy'; src = '有 ' + lastOrderCount + ' 单待发货'; }
+          } else if (typeof lastUnreadCount === 'number' && lastUnreadCount > 0) {
+            st = 'busy'; src = '有 ' + lastUnreadCount + ' 条未读消息';
+          }
+        } catch (e) {}
+      }
+    }
+
+    const key = st + '|' + src;
+    if (key === lastStatusSent) return;
+    lastStatusSent = key;
+    try { ipcRenderer.sendToHost('cs-status', { status: st, src: src, ts: Date.now() }); } catch (e) {}
+  }
+
   // v18: 京东订单页第一次打开常出现「数据异常，请刷新重试」，自动刷新一次即可。
   //      只重试一次，避免死循环。
   function csAutoReloadOnce() {
@@ -879,6 +1036,9 @@ const { ipcRenderer } = require('electron');
       // v22: 抖店来了新订单页面自己不动，数字不变，仪表盘不更新也不提醒。
       //      所以每 3 分钟让订单页重新查一次（具体做法见 csOrderAutoRefresh）。
       setInterval(csOrderAutoRefresh, ORDER_REFRESH_MS);
+      // v24: 主标签那颗圆点（在线 / 忙碌 / 离线）—— 每 10 秒报一次
+      setInterval(csReportStatus, 10000);
+      setTimeout(csReportStatus, 6000);
     }
     if (config && config.cleanModeEnabled && config.cleanCss) {
       applyCleanMode(true, config.cleanCss);

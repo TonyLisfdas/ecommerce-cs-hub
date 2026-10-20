@@ -182,10 +182,14 @@ body, html {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #10b981;
   flex-shrink: 0;
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.6);
+  transition: background .2s ease, box-shadow .2s ease;
 }
+/* v24: 在线绿 / 忙碌红 / 离线灰（以前是写死的绿色，不管实际状态） */
+.tab-status-dot.st-online  { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, .6); }
+.tab-status-dot.st-busy    { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, .65); }
+.tab-status-dot.st-offline { background: #94a3b8; box-shadow: none; opacity: .8; }
+.tab-status-dot.st-unknown { background: #64748b; box-shadow: none; opacity: .45; }
 
 /* 未读消息数字角标 */
 .tab-unread-badge {

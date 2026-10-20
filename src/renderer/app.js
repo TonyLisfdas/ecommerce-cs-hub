@@ -247,6 +247,54 @@
 
   // ============================================================================
   // ============================================================================ 
+  // ─────────────────────────────────────────────────────────────────────────
+  // v24: 主标签上那颗小圆点 —— 原来永远是绿色（假的），现在表示真实状态
+  //   在线(绿) = 正常，没有待处理的
+  //   忙碌(红) = 有客人等着回 / 有订单等着发
+  //   离线(灰) = 这个页面停在登录页，掉线了，得重新登录
+  // ─────────────────────────────────────────────────────────────────────────
+  // { shopId: { cs: { status, src }, order: { status, src } } }
+  const shopStatus = {};
+
+  function setShopStatus(shopId, page, st, src) {
+    shopStatus[shopId] = shopStatus[shopId] || {};
+    const prev = shopStatus[shopId][page];
+    if (prev && prev.status === st && prev.src === src) return;
+    shopStatus[shopId][page] = { status: st, src: src || '' };
+    paintStatusDot(shopId);
+  }
+
+  function statusPick(shopId) {
+    const s = shopStatus[shopId] || {};
+    // 有客服页的以客服页为准；淘宝 / 小红书没有客服页，就看订单页
+    return s.cs || s.order || null;
+  }
+  function statusOf(shopId) {
+    const p = statusPick(shopId);
+    return (p && p.status) || 'unknown';
+  }
+  function statusSrc(shopId) {
+    const p = statusPick(shopId);
+    return (p && p.src) || '';
+  }
+
+  function statusTitle(st, src) {
+    const base = ({ online: '在线', busy: '忙碌', offline: '离线' })[st] || '还没连上';
+    return src ? (base + '（' + src + '）') : base;
+  }
+
+  // 只改这一颗点的颜色和提示，不重画整个标签栏（重画会把网页容器挪掉、登录就没了）
+  function paintStatusDot(shopId) {
+    const tabEl = document.getElementById('tab_' + shopId);
+    if (!tabEl) return;
+    const dot = tabEl.querySelector('.tab-status-dot');
+    if (!dot) return;
+    const st = statusOf(shopId);
+    dot.classList.remove('st-online', 'st-busy', 'st-offline', 'st-unknown');
+    dot.classList.add('st-' + st);
+    dot.title = statusTitle(st, statusSrc(shopId));
+  }
+
   // 2.5 同平台聚合 + 标签拖拽换位 + Windows 原生窗口内嵌控制条
   // ============================================================================ 
   function groupShopsByPlatform(shops) {
@@ -350,7 +398,7 @@
           <span class="tab-shop-name">${escapeHtml(shop.shopName)}</span>
           <span class="tab-platform-sub">${plat.shortName} · ${hasSavedCred ? '已存账密' : '独立沙箱'}</span>
         </div>
-        <span class="tab-status-dot" title="客服长连接在线"></span>
+        <span class="tab-status-dot st-${statusOf(shop.id)}" title="${escapeHtml(statusTitle(statusOf(shop.id), statusSrc(shop.id)))}"></span>
         <span class="tab-unread-badge ${rt.unreadCount > 0 ? '' : 'hidden'}">${rt.unreadCount > 99 ? '99+' : rt.unreadCount}</span>
         ${appState.shops.length > 1 ? `<span class="tab-close-btn" data-close-id="${shop.id}" title="关闭此店铺标签页">✕</span>` : ''}
       `;
@@ -450,6 +498,9 @@
             if (toIdx > appState.shops.length) toIdx = appState.shops.length;
             appState.shops.splice(toIdx, 0, moved);
             appState.shops.forEach((x2, i2) => { x2.order = i2; });
+            // v24: ★ 这行以前漏了！只有测试钩子 __doReorder 里有，真正拖拽的这儿没有。
+            //      没有它，一重启就会被「按平台自动归拢」重新排回去，看着像没记住。
+            appState.tabOrderCustomized = true;
             renderAllTabs();
             renderAllShopPanes();
             persistState();
@@ -568,6 +619,9 @@
           handleOrderDebug(shop.id, event.args[0] || {});
         } else if (event.channel === 'cs-autofill-result') {
           handleAutoFillResult(shop.id, event.args[0] || {});
+        } else if (event.channel === 'cs-status') {
+          const sp = event.args[0] || {};
+          setShopStatus(shop.id, (kind === 'order' ? 'order' : 'cs'), sp.status || 'unknown', sp.src || '');
         }
       });
     }
@@ -1763,6 +1817,24 @@
         lines.push('#' + i + ' 能读到=' + (f.readable ? '是' : '否')
           + ' 正文 ' + (f.len || 0) + ' 字 | 网址=' + (f.src || '(空)')
           + ' | id=' + (f.id || '-') + ' | class=' + (f.cls || '-'));
+      });
+    }
+    // v24: 客服状态读得准不准，一眼就能看出来（读不准就把这段粘给云端，加个词就行）
+    lines.push('--- 客服状态 ---');
+    if (d.agentStatus && d.agentStatus.st) {
+      lines.push('读到的状态：' + ({ online: '在线', busy: '忙碌', offline: '离线' })[d.agentStatus.st]
+        + '（依据：' + d.agentStatus.where + ' 里的「' + d.agentStatus.word + '」）');
+    } else {
+      lines.push('读到的状态：（没有）—— 页面上没找到「在线 / 忙碌 / 离开」这类词');
+    }
+    if (Array.isArray(d.statusCandidates) && d.statusCandidates.length) {
+      lines.push('页面上像状态词的：' + d.statusCandidates.join(' / '));
+    }
+    // v24: shadow DOM（微信小店的订单很可能就封在这里面）
+    if (Array.isArray(d.shadows) && d.shadows.length) {
+      lines.push('--- shadow DOM（网页封起来的容器）---');
+      d.shadows.forEach(function (s, i) {
+        lines.push('#' + i + ' 正文 ' + (s.len || 0) + ' 字：' + (s.text || '(空)'));
       });
     }
     // v23: 所有写着「待发货」这类词的元素，一个一个列出来（抖店就卡在这儿）
