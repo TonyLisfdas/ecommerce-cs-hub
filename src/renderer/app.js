@@ -511,7 +511,10 @@
         cleanCss: plat.cleanCss,
         unreadSelectors: isBuiltinSub ? plat.unreadSelectors : [],
         loginSelectors: plat.loginSelectors,
-        autoFillOnLoad: isBuiltinSub ? shop.autoFill : false,
+        // v23: 老板明确说了不要「一打开页面就自己填」（有时打开某个页面就填上了）。
+        //      现在默认一律不自动填；想要的话，在账密设置里勾上「打开页面时自动填充」。
+        //      平常要填，按工具栏那个「⚡ 一键填充」就行。
+        autoFillOnLoad: !!(isBuiltinSub && shop.autoFill === true && appState.autoFillOnLoadEnabled === true),
         credentials: isBuiltinSub
           ? { username: shop.username || '', password: shop.password || '', autoSubmit: shop.autoSubmit }
           : { username: '', password: '', autoSubmit: false },
@@ -563,6 +566,8 @@
           handleOrderCountUpdate(shop.id, event.args[0] || {});
         } else if (event.channel === 'cs-order-debug') {
           handleOrderDebug(shop.id, event.args[0] || {});
+        } else if (event.channel === 'cs-autofill-result') {
+          handleAutoFillResult(shop.id, event.args[0] || {});
         }
       });
     }
@@ -1069,7 +1074,11 @@
       document.getElementById('vaultShopName').value = shop.shopName || '';
       document.getElementById('vaultUsername').value = shop.username || '';
       document.getElementById('vaultPassword').value = shop.password || '';
-      document.getElementById('vaultAutoFill').checked = shop.autoFill !== false;
+      document.getElementById('vaultAutoFill').checked = shop.autoFill === true; // v23: 默认不勾
+      const vg = document.getElementById('vaultAutoFillEnabled');
+      if (vg) vg.checked = appState.autoFillOnLoadEnabled === true; // v23: 总开关，默认关
+      const vc = document.getElementById('vaultContextMenu');
+      if (vc) vc.checked = appState.webContextMenu !== false; // v23: 网页右键，默认开
       document.getElementById('vaultAutoSubmit').checked = Boolean(shop.autoSubmit);
       document.getElementById('vaultModal').classList.remove('hidden');
     });
@@ -1086,6 +1095,11 @@
       shop.username = document.getElementById('vaultUsername').value.trim();
       shop.password = document.getElementById('vaultPassword').value;
       shop.autoFill = document.getElementById('vaultAutoFill').checked;
+      // v23: 两个新开关
+      const vg2 = document.getElementById('vaultAutoFillEnabled');
+      if (vg2) appState.autoFillOnLoadEnabled = vg2.checked;
+      const vc2 = document.getElementById('vaultContextMenu');
+      if (vc2) { appState.webContextMenu = vc2.checked; pushContextMenuSetting(); }
       shop.autoSubmit = document.getElementById('vaultAutoSubmit').checked;
 
       persistState();
@@ -1247,6 +1261,52 @@
         `已向 [${shop.shopName}] 自动填入账号 (${shop.username || '默认客服号'}) 并保持独立 Cookie 免密会话`
       );
     }
+  }
+
+  // v23: 「一键填充」的结果弹到主界面上。
+  //      以前只在网页里弹一条横幅，经常被网页自己挡住 —— 老板点了按钮什么都没看到。
+  //      客服页和订单页都会回报一次，所以稍微等一下，挑「填得最全」的那次来说。
+  const autofillBuf = {};
+  function handleAutoFillResult(shopId, r) {
+    const prev = autofillBuf[shopId];
+    if (prev && (prev.filled || 0) >= ((r && r.filled) || 0)) return;
+    autofillBuf[shopId] = r || {};
+    clearTimeout(autofillBuf[shopId + '__t']);
+    autofillBuf[shopId + '__t'] = setTimeout(function () {
+      delete autofillBuf[shopId];
+      delete autofillBuf[shopId + '__t'];
+      showAutoFillTip(shopId, r || {});
+    }, 700);
+  }
+
+  function showAutoFillTip(shopId, r) {
+    const shop = (appState.shops || []).filter(function (s) { return s.id === shopId; })[0];
+    const plat = shop ? (platformMap[shop.platformId] || platforms[0]) : null;
+    const name = plat ? plat.shortName : (shop ? shop.shopName : '');
+    let msg, color;
+    if (r.filled >= 2) {
+      msg = '✅ 已填入【' + name + '】的账号和密码';
+      color = '#10b981';
+    } else if (r.filled === 1) {
+      msg = '⚠️ 【' + name + '】只填上了' + (r.user ? '密码' : '账号') + '，另一个输入框没找到';
+      color = '#f59e0b';
+    } else {
+      msg = 'ℹ️ 【' + name + '】这个页面上没找到登录框\n'
+        + '多半是已经登录了，或者这个平台要扫码登录（扫码的就填不了，得手动扫）';
+      color = '#64748b';
+    }
+    if (typeof showCopyUrlToast === 'function') showCopyUrlToast(msg, color);
+  }
+
+  // v23: 把「网页里允不允许右键」告诉所有已经打开的网页
+  function pushContextMenuSetting() {
+    const on = appState.webContextMenu !== false;
+    try {
+      document.querySelectorAll('webview').forEach(function (wv) {
+        if (typeof wv.send === 'function') { wv.send('cs-set-contextmenu', { enabled: on }); }
+      });
+    } catch (e) {}
+    persistState();
   }
 
   function removeShopTab(shopId) {
@@ -1705,6 +1765,14 @@
           + ' | id=' + (f.id || '-') + ' | class=' + (f.cls || '-'));
       });
     }
+    // v23: 所有写着「待发货」这类词的元素，一个一个列出来（抖店就卡在这儿）
+    if (Array.isArray(d.kwEls) && d.kwEls.length) {
+      lines.push('--- 写着「待发货」这类词的元素 ---');
+      d.kwEls.forEach(function (e, i) {
+        lines.push('#' + i + ' [' + (e.visible ? '看得见' : '被藏起来了') + '] <' + e.tag + '> '
+          + e.size + ' 「' + e.text + '」' + (e.cls ? (' class=' + e.cls) : ''));
+      });
+    }
     const txt = lines.join('\n');
     const done = copyTextToClipboard(txt);
     showDiagModal((plat ? plat.shortName : shopId), txt, done);
@@ -1721,9 +1789,9 @@
       + 'background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;';
     box.innerHTML = ''
       + '<div style="width:min(760px,92vw);max-height:78vh;display:flex;flex-direction:column;overflow:hidden;'
-      + 'background:var(--bg-shell,#1e293b);color:var(--text,#e2e8f0);'
-      + 'border:1px solid var(--border,#334155);border-radius:10px;box-shadow:0 14px 44px rgba(0,0,0,.5);">'
-      + '<div style="padding:10px 14px;border-bottom:1px solid var(--border,#334155);'
+      + 'background:var(--bg-shell,#1e293b);color:var(--text-light,#e2e8f0);'
+      + 'border:1px solid var(--border-dark,#334155);border-radius:10px;box-shadow:0 14px 44px rgba(0,0,0,.5);">'
+      + '<div style="padding:10px 14px;border-bottom:1px solid var(--border-dark,#334155);'
       + 'display:flex;align-items:center;gap:8px;">'
       + '<strong style="font-size:13px;">【订单页诊断】' + String(name || '') + '</strong>'
       + '<span style="margin-left:auto;font-size:11.5px;opacity:.7;">'
@@ -1827,8 +1895,8 @@
     toast.innerHTML =
       '<div style="display:flex;align-items:center;gap:6px;">'
       + '<span class="tab-platform-icon" data-plat="' + plat.id + '" style="width:18px;height:18px;font-size:10px;background:' + plat.color + '" ></span>'
-      + '<strong style="font-size:12.5px;color:#fff;">' + plat.shortName + ' 有新订单</strong>'
-      + '<span style="font-size:11px;color:#94a3b8;">待发货 ' + count + ' 单</span>'
+      + '<strong style="font-size:12.5px;color:var(--text-light);">' + plat.shortName + ' 有新订单</strong>'
+      + '<span style="font-size:11px;color:var(--text-muted);">待发货 ' + count + ' 单</span>'
       + '</div>';
     toast.addEventListener('click', () => {
       switchToShopTab(shop.id);
@@ -1974,7 +2042,9 @@
     el.className = "incoming-toast";
     el.style.borderLeftColor = color || "#38bdf8";
     el.style.cursor = "default";
-    el.innerHTML = '<div style="font-size:12px;color:#e2e8f0;line-height:1.6;white-space:pre-wrap;word-break:break-all;">' + escapeHtml(text) + '</div>';
+    // v23: 以前写死成近白色 #e2e8f0，浅色主题下就成了白底白字，根本看不见。
+    //      现在跟着主题走（深色主题是白字，浅色主题自动变深字）。
+    el.innerHTML = '<div style="font-size:12px;color:var(--text-light);line-height:1.6;white-space:pre-wrap;word-break:break-all;">' + escapeHtml(text) + '</div>';
     stack.appendChild(el);
     setTimeout(() => { if (el.parentNode) el.remove(); }, 5000);
   }

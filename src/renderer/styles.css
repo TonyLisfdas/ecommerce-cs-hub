@@ -956,7 +956,8 @@ body, html {
   border-top: 1px solid #334155;
   border-right: 1px solid #334155;
   border-bottom: 1px solid #334155;
-  color: #f8fafc;
+  /* v23: 提示文字跟着主题走 —— 以前写死近白色，浅色主题下白底白字看不见 */
+  color: var(--text-light);
   padding: 12px 14px;
   border-radius: 8px;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
@@ -1113,14 +1114,19 @@ body, html {
 .order-dash-card .od-info strong { font-size: 12.5px; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .order-dash-card .od-info em { font-size: 11px; color: #94a3b8; font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* v22: 订单卡片上的小问号 —— 数字不对劲时点它看诊断 */
+/* v23: 小问号之前太淡了（半透明 + 灰字），老板说他压根没看见 */
 .order-dash-card .od-diag {
-  margin-left: auto; flex: 0 0 16px; width: 16px; height: 16px;
-  border-radius: 50%; border: 1px solid #475569; color: #94a3b8;
-  font-size: 11px; line-height: 14px; text-align: center;
-  cursor: pointer; opacity: .5; transition: opacity .15s ease, background .15s ease;
+  margin-left: auto; flex: 0 0 18px; width: 18px; height: 18px;
+  border-radius: 50%; border: 1px solid var(--text-muted, #94a3b8);
+  color: var(--text-muted, #94a3b8);
+  font-size: 12px; font-weight: 700; line-height: 16px; text-align: center;
+  cursor: pointer; opacity: .85; flex-shrink: 0;
+  transition: opacity .15s ease, background .15s ease;
 }
 .order-dash-card:hover .od-diag { opacity: 1; }
-.order-dash-card .od-diag:hover { background: rgba(148,163,184,.22); color: #e2e8f0; }
+.order-dash-card .od-diag:hover {
+  background: var(--accent-blue, #2563eb); color: #fff; border-color: var(--accent-blue, #2563eb);
+}
 .order-dash-footer {
   display: flex; flex-direction: column; gap: 2px;
   padding: 8px 12px;

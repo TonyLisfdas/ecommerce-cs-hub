@@ -275,6 +275,14 @@ const { ipcRenderer } = require('electron');
         agreeEl.click();
       }
 
+      // v23: 结果也要报回主界面。以前只在网页里弹一条横幅，经常被网页自己挡住，
+      //      老板点了「一键填充」却什么都没看见，还以为按钮坏了。
+      try {
+        ipcRenderer.sendToHost('cs-autofill-result', {
+          filled: filledCount, user: !!userEl, pass: !!passEl, ts: Date.now()
+        });
+      } catch (e) {}
+
       if (filledCount > 0) {
         showInPageBanner(`已为您自动填入店铺账号密码（${username}）`, '#07C160');
         if (autoSubmit) {
@@ -518,10 +526,20 @@ const { ipcRenderer } = require('electron');
     let docs = [];
     try { docs = collectReadableDocs(0, []); } catch (e) {}
     try { d.sameOriginIframes = Math.max(0, docs.length - 1); } catch (e) {}
+    // v23: 正文从 300 字提到 2000 字。抖店那次只给了 300 字，整段都是左侧菜单，
+    //      真正有内容的订单区在后面，压根没露出来，没法定位。
+    //      另外：页面把文字「藏起来」的时候 innerText 取不到，
+    //      这时候就把 textContent（藏起来的字）也报回来。
     docs.slice(0, 4).forEach(function (bd, i) {
-      let t = '';
-      try { t = String(bd.innerText || ''); } catch (e) {}
-      d.frames.push({ i: i, len: t.length, text: t.replace(/\s+/g, ' ').slice(0, 300) });
+      let t = '', raw = '';
+      try { t = String(bd.innerText || '').replace(/\s+/g, ' '); } catch (e) {}
+      try { raw = String(bd.textContent || '').replace(/\s+/g, ' '); } catch (e) {}
+      d.frames.push({
+        i: i,
+        len: t.length,
+        rawLen: raw.length,
+        text: (t.length > 30 ? t : (raw || t)).slice(0, 2000)
+      });
       if (i === 0) d.bodyLen = t.length;
     });
 
@@ -561,6 +579,34 @@ const { ipcRenderer } = require('electron');
           if (ok) len = String(f.contentDocument.body.innerText || '').length;
         } catch (e) { ok = false; }
         d.iframeInfo.push({ src: fsrc.slice(0, 120), id: fid.slice(0, 40), cls: fcls.slice(0, 60), readable: ok, len: len });
+      }
+    } catch (e) {}
+    // v23: 把所有写着「待发货」这类词的元素挨个列出来，并且标明
+    //      「页面上看得见」还是「被藏起来了」—— 抖店的「待发货」一直读不到，
+    //      得先搞清楚它到底是藏着的，还是长得跟我们想的不一样。
+    d.kwEls = [];
+    try {
+      const kws = ['待发货', '待出库', '未发货', '待备货', '待处理发货'];
+      const all = document.querySelectorAll('*');
+      for (let i = 0; i < all.length && d.kwEls.length < 25; i++) {
+        const el = all[i];
+        let raw = '';
+        try { raw = String(el.textContent || '').trim(); } catch (e) { continue; }
+        if (!raw || raw.length > 40) continue;
+        let hit = '';
+        for (const k of kws) { if (raw.indexOf(k) >= 0) { hit = k; break; } }
+        if (!hit) continue;
+        let vis = '';
+        try { vis = String(el.innerText || '').trim(); } catch (e) {}
+        let rect = null;
+        try { rect = el.getBoundingClientRect(); } catch (e) {}
+        d.kwEls.push({
+          tag: String(el.tagName || '').toLowerCase(),
+          cls: String(el.className || '').slice(0, 40),
+          text: raw.slice(0, 30),
+          visible: (vis.length > 0 && !!rect && rect.width > 0 && rect.height > 0),
+          size: rect ? (Math.round(rect.width) + 'x' + Math.round(rect.height)) : '?'
+        });
       }
     } catch (e) {}
     try { d.loginRequired = csOrderLoginRequired(); } catch (e) {}
@@ -711,6 +757,23 @@ const { ipcRenderer } = require('electron');
     } catch (e) {}
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // v23: 网页右键菜单
+  //   抖店、淘宝这些平台会自己把右键禁掉（点右键没反应）。
+  //   在最外层「抢先」把事件拦下来 —— 网页自己的处理器就跑不到了，
+  //   浏览器的原生右键菜单（复制 / 粘贴 / 刷新）就回来了。
+  //   不想要的话，在账密设置里把「网页里允许右键」取消即可。
+  // ─────────────────────────────────────────────────────────────────────────
+  try {
+    document.addEventListener('contextmenu', function (e) {
+      if (window.__csNoContextMenu) return;
+      e.stopPropagation();
+    }, true);
+  } catch (e) {}
+  ipcRenderer.on('cs-set-contextmenu', (event, payload) => {
+    window.__csNoContextMenu = !(payload && payload.enabled !== false);
+  });
+
   // v18: 京东订单页第一次打开常出现「数据异常，请刷新重试」，自动刷新一次即可。
   //      只重试一次，避免死循环。
   function csAutoReloadOnce() {
@@ -803,6 +866,8 @@ const { ipcRenderer } = require('electron');
 
   ipcRenderer.on('cs-init-config', (event, config) => {
     platformConfig = config;
+    // v23: 网页右键菜单的开关（默认开）
+    window.__csNoContextMenu = !(config && config.webContextMenu !== false);
     // v11 Phase D: 订单页 webview 启动 90s 待发货数字轮扫（客服页无 orderUnreadKeyword 自动跳过）
     if (config && Array.isArray(config.orderUnreadKeyword) && config.orderUnreadKeyword.length) {
       // v20: SPA 页面渲染慢，只在 dom-ready 扫一次经常扫空。前 30 秒多扫几次。
