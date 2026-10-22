@@ -1645,55 +1645,135 @@
     if (m) m.remove();
   }
 
+  // v25: 自定义输入弹框（替代被 Electron 禁用的 window.prompt）
+  function showTextInput(title, defaultValue, onOk) {
+    const oldEl = document.getElementById('subtabTextInput');
+    if (oldEl) oldEl.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'subtabTextInput';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:99999;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--surface,#1e293b);border:1px solid var(--border,#334155);border-radius:12px;padding:20px 24px;min-width:320px;max-width:440px;color:var(--text,#e2e8f0);font-size:14px;box-shadow:0 8px 32px rgba(0,0,0,.4);';
+    const head = document.createElement('div');
+    head.textContent = String(title);
+    head.style.cssText = 'font-weight:600;margin-bottom:12px;';
+    box.appendChild(head);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = defaultValue || '';
+    input.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border,#475569);border-radius:6px;background:var(--bg,#0f172a);color:var(--text,#e2e8f0);font-size:14px;margin-bottom:12px;outline:none;';
+    input.addEventListener('keydown', function(e) { if (e.key === 'Enter') doOk(); else if (e.key === 'Escape') doCancel(); });
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const btnCancel = document.createElement('button');
+    btnCancel.textContent = '取消';
+    btnCancel.style.cssText = 'padding:6px 14px;border:1px solid var(--border,#475569);border-radius:6px;background:transparent;color:var(--text,#e2e8f0);cursor:pointer;font-size:13px;';
+    const btnOk = document.createElement('button');
+    btnOk.textContent = '确定';
+    btnOk.style.cssText = 'padding:6px 14px;border:none;border-radius:6px;background:#3b82f6;color:#fff;cursor:pointer;font-size:13px;font-weight:600;';
+    btns.appendChild(btnCancel);
+    btns.appendChild(btnOk);
+    box.appendChild(input);
+    box.appendChild(btns);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    input.focus();
+    input.select();
+    function doOk() { overlay.remove(); onOk(input.value); }
+    function doCancel() { overlay.remove(); onOk(null); }
+    btnOk.addEventListener('click', doOk);
+    btnCancel.addEventListener('click', doCancel);
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) doCancel(); });
+  }
+
+  // v25: 自定义确认弹框（替代被 Electron 禁用的 window.confirm）
+  function showConfirmBox(msg, onOk) {
+    const oldEl = document.getElementById('subtabConfirmBox');
+    if (oldEl) oldEl.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'subtabConfirmBox';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:99999;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:var(--surface,#1e293b);border:1px solid var(--border,#334155);border-radius:12px;padding:20px 24px;min-width:280px;max-width:400px;color:var(--text,#e2e8f0);font-size:14px;box-shadow:0 8px 32px rgba(0,0,0,.4);';
+    const msgEl = document.createElement('div');
+    msgEl.textContent = String(msg);
+    msgEl.style.cssText = 'margin-bottom:16px;white-space:pre-line;';
+    box.appendChild(msgEl);
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const btnCancel = document.createElement('button');
+    btnCancel.textContent = '取消';
+    btnCancel.style.cssText = 'padding:6px 14px;border:1px solid var(--border,#475569);border-radius:6px;background:transparent;color:var(--text,#e2e8f0);cursor:pointer;font-size:13px;';
+    const btnOk = document.createElement('button');
+    btnOk.textContent = '确定';
+    btnOk.style.cssText = 'padding:6px 14px;border:none;border-radius:6px;background:#ef4444;color:#fff;cursor:pointer;font-size:13px;font-weight:600;';
+    btns.appendChild(btnCancel);
+    btns.appendChild(btnOk);
+    box.appendChild(btns);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    function doOk() { overlay.remove(); onOk(); }
+    function doCancel() { overlay.remove(); }
+    btnOk.addEventListener('click', doOk);
+    btnCancel.addEventListener('click', doCancel);
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) doCancel(); });
+  }
+
   function renameSubTab(shop, tab) {
-    const nv = window.prompt('给这个子标签起个名字：', tab.name || '');
-    if (nv === null) return;
-    const name = String(nv).trim() || tab.name;
-    if (tab.builtin) {
-      shop.subTabMeta = shop.subTabMeta || {};
-      shop.subTabMeta[tab.id] = shop.subTabMeta[tab.id] || {};
-      shop.subTabMeta[tab.id].name = name;
-    } else {
-      const t = findSubTab(shop, tab.id);
-      if (t) t.name = name;
-    }
-    persistState();
-    syncSubTabs(shop);
+    // v25: window.prompt 在 Electron 里被禁用（点了没反应），改用自定义弹框
+    showTextInput('给这个子标签起个名字：', tab.name || '', function(name) {
+      if (name === null) return;
+      const trimmed = String(name).trim();
+      if (!trimmed) return;
+      if (tab.builtin) {
+        shop.subTabMeta = shop.subTabMeta || {};
+        shop.subTabMeta[tab.id] = shop.subTabMeta[tab.id] || {};
+        shop.subTabMeta[tab.id].name = trimmed;
+      } else {
+        const t = findSubTab(shop, tab.id);
+        if (t) t.name = trimmed;
+      }
+      persistState();
+      syncSubTabs(shop);
+      subtabTip('已重命名为「' + trimmed + '」', '#10b981');
+    });
   }
-
   function editSubTabUrl(shop, tab) {
-    const nv = window.prompt('这个子标签要打开的网址：', tab.url || '');
-    if (nv === null) return;
-    const url = String(nv).trim();
-    if (!url) { subtabTip('网址不能为空，没有改动。', '#f97316'); return; }
-    if (tab.role === 'cs') shop.customUrl = url;
-    else if (tab.role === 'order') shop.orderUrl = url;
-    else { const t = findSubTab(shop, tab.id); if (t) t.url = url; }
-    persistState();
-    const rt = runtimeShops[shop.id] || {};
-    const host = (rt.hosts || {})[tab.id];
-    const wv = host ? host.querySelector('webview') : null;
-    if (wv && typeof wv.loadURL === 'function') { try { wv.loadURL(url); } catch (e) {} }
-    syncSubTabs(shop);
-    subtabTip('网址已改，正在打开新网址。', '#10b981');
+    // v25: window.prompt 在 Electron 里被禁用（点了没反应），改用自定义弹框
+    showTextInput('这个子标签要打开的网址：', tab.url || '', function(url) {
+      if (url === null) return;
+      const trimmed = String(url).trim();
+      if (!trimmed) { subtabTip('网址不能为空，没有改动。', '#f97316'); return; }
+      if (tab.role === 'cs') shop.customUrl = trimmed;
+      else if (tab.role === 'order') shop.orderUrl = trimmed;
+      else { const t = findSubTab(shop, tab.id); if (t) t.url = trimmed; }
+      persistState();
+      const rt = runtimeShops[shop.id] || {};
+      const host = (rt.hosts || {})[tab.id];
+      const wv = host ? host.querySelector('webview') : null;
+      if (wv && typeof wv.loadURL === 'function') { try { wv.loadURL(trimmed); } catch (err) {} }
+      syncSubTabs(shop);
+      subtabTip('网址已改，正在打开新网址。', '#10b981');
+    });
   }
-
   function deleteSubTab(shop, tab) {
+    // v25: window.confirm 在 Electron 里被禁用（点了没反应），改用自定义确认框
     const msg = tab.builtin
       ? '确定删掉内置的「' + tab.name + '」页吗？\n（删错了没关系：在「➕」按钮上点右键就能恢复）'
       : '确定删除子标签「' + tab.name + '」吗？';
-    if (!window.confirm(msg)) return;
-    if (tab.builtin) {
-      shop.hiddenBuiltins = (shop.hiddenBuiltins || []).concat([tab.id]);
-    } else {
-      shop.subTabs = (shop.subTabs || []).filter(function (t) { return t.id !== tab.id; });
-      const rt = runtimeShops[shop.id] || {};
-      rt.tempTabs = (rt.tempTabs || []).filter(function (t) { return t.id !== tab.id; });
-    }
-    persistState();
-    syncSubTabs(shop);
+    showConfirmBox(msg, function() {
+      if (tab.builtin) {
+        shop.hiddenBuiltins = (shop.hiddenBuiltins || []).concat([tab.id]);
+      } else {
+        shop.subTabs = (shop.subTabs || []).filter(function (t) { return t.id !== tab.id; });
+        const rt = runtimeShops[shop.id] || {};
+        rt.tempTabs = (rt.tempTabs || []).filter(function (t) { return t.id !== tab.id; });
+      }
+      persistState();
+      syncSubTabs(shop);
+      subtabTip('已删除「' + tab.name + '」。', '#10b981');
+    });
   }
-
   function saveTempSubTab(shop, tab) {
     const rt = runtimeShops[shop.id] || {};
     const host = (rt.hosts || {})[tab.id];
