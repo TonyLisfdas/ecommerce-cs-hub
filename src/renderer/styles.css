@@ -1566,3 +1566,5 @@ html[data-theme="navy"] .order-dash-close:hover,
 html[data-theme="forest"] .order-dash-close:hover {
   background: var(--bg-tabbar) !important;
 }
+.subtab-btn.subtab-dragging { opacity: .5; }
+.subtab-btn { user-select: none; }

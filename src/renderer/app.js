@@ -1458,6 +1458,17 @@
     (rt.tempTabs || []).forEach(function (t) {
       list.push({ id: t.id, name: t.name || '🔹 临时', url: t.url || '', builtin: false, role: 'temp' });
     });
+    // v27: 记住用户手动拖过的子标签顺序（没拖过就保持默认顺序）
+    if (Array.isArray(shop.subTabOrder) && shop.subTabOrder.length) {
+      const order = shop.subTabOrder;
+      list.sort(function (a, b) {
+        const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
+        if (ia === -1 && ib === -1) return 0;
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+      });
+    }
     return list;
   }
 
@@ -1565,7 +1576,79 @@
     b.title = (tab.name || '') + (tab.url ? ('\n' + tab.url) : '') + '\n\n（点右键：重命名 / 改网址 / 删除）';
     b.addEventListener('click', function () { switchShopSubTab(shop, tab.id); });
     b.addEventListener('contextmenu', function (e) { e.preventDefault(); showSubTabMenu(e.clientX, e.clientY, shop, tab); });
+    // v27: 子标签可拖动换位（按住横向移>5px 拖动，松手后自动记住顺序）
+    b.addEventListener('mousedown', function (e) { if (e.button === 0) startSubTabDrag(shop, b, tab, e); });
     return b;
+  }
+
+  // v27: 子标签拖拽换位（手法跟主标签一致：ghost 跟随 + 实时换位 + 松手记顺序）
+  function startSubTabDrag(shop, btn, tab, e) {
+    const startX = e.clientX, startY = e.clientY;
+    const bar = btn.closest('.subtab-bar');
+    if (!bar) return;
+    let dragging = false;
+    function onMove(me) {
+      if (!dragging) {
+        if (Math.abs(me.clientX - startX) < 5 && Math.abs(me.clientY - startY) < 5) return;
+        dragging = true;
+        btn.classList.add('subtab-dragging');
+        const stage = document.getElementById('webviewsStage');
+        if (stage) stage.style.pointerEvents = 'none';
+        const g = document.getElementById('tabDragGhost');
+        if (g) {
+          g.textContent = tab.name;
+          g.style.width = btn.offsetWidth + 'px';
+          g.style.fontSize = '12px';
+          g.style.display = 'block';
+        }
+        document.body.style.cursor = 'grabbing';
+      }
+      const g = document.getElementById('tabDragGhost');
+      if (g) { g.style.left = (me.clientX + 8) + 'px'; g.style.top = (me.clientY - 14) + 'px'; }
+      // 遍历兄弟按钮的 getBoundingClientRect，看鼠标 X 落在谁的范围里 → 插到那个位置
+      const allBtns = Array.from(bar.querySelectorAll('.subtab-btn')).filter(function(b) { return !b.classList.contains('subtab-add'); });
+      for (let i = 0; i < allBtns.length; i++) {
+        const target = allBtns[i];
+        if (target === btn) continue;
+        const r = target.getBoundingClientRect();
+        if (me.clientX >= r.left && me.clientX <= r.right) {
+          const after = (me.clientX - r.left) > r.width / 2;
+          if (after) target.parentNode.insertBefore(btn, target.nextSibling);
+          else target.parentNode.insertBefore(btn, target);
+          break;
+        }
+      }
+      me.preventDefault();
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      const g = document.getElementById('tabDragGhost');
+      if (g) g.style.display = 'none';
+      const stage = document.getElementById('webviewsStage');
+      if (stage) stage.style.pointerEvents = '';
+      if (dragging) {
+        btn.classList.remove('subtab-dragging');
+        applySubTabDomOrder(shop, bar);
+      }
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+  function applySubTabDomOrder(shop, bar) {
+    if (!bar) return;
+    const plat = platformMap[shop.platformId] || platforms[0];
+    const known = getShopAllTabs(shop, plat).map(function (t) { return t.id; });
+    const ids = Array.from(bar.querySelectorAll('.subtab-btn'))
+      .filter(function (b) { return !b.classList.contains('subtab-add'); })
+      .map(function (b) { return b.dataset.subtab; })
+      .filter(function (id) { return known.indexOf(id) !== -1; });
+    if (ids.length) {
+      shop.subTabOrder = ids;
+      persistState();
+      syncSubTabs(shop);
+    }
   }
 
   function ensureActiveSubTabLoaded(shop, plat) {
