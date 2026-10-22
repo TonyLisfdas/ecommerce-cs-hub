@@ -203,6 +203,12 @@
       gh.id = 'tabDragGhost';
       document.body.appendChild(gh);
     }
+    // v28: 子标签拖拽的「丨」落点指示器
+    if (!document.getElementById('subtabDropIndicator')) {
+      const si = document.createElement('div');
+      si.id = 'subtabDropIndicator';
+      document.body.appendChild(si);
+    }
     bindToolbarEvents();
     bindCopyUrlButton(); // v14: 复制当前网址按钮
     bindSetOrderUrlButton(); // v15: 设为订单页网址按钮
@@ -1613,6 +1619,15 @@
         const r = target.getBoundingClientRect();
         if (me.clientX >= r.left && me.clientX <= r.right) {
           const after = (me.clientX - r.left) > r.width / 2;
+          // v28: 显示「丨」落点指示器（标在即将落入的位置）
+          const ind = document.getElementById('subtabDropIndicator');
+          if (ind) {
+            const barRect = bar.getBoundingClientRect();
+            ind.style.left = (after ? r.right + 1 : r.left - 1) + 'px';
+            ind.style.top = (barRect.top + 2) + 'px';
+            ind.style.height = (barRect.height - 4) + 'px';
+            ind.style.display = 'block';
+          }
           if (after) target.parentNode.insertBefore(btn, target.nextSibling);
           else target.parentNode.insertBefore(btn, target);
           break;
@@ -1626,6 +1641,8 @@
       document.body.style.cursor = '';
       const g = document.getElementById('tabDragGhost');
       if (g) g.style.display = 'none';
+      const ind = document.getElementById('subtabDropIndicator');
+      if (ind) ind.style.display = 'none';
       const stage = document.getElementById('webviewsStage');
       if (stage) stage.style.pointerEvents = '';
       if (dragging) {

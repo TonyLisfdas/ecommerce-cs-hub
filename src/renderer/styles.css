@@ -1568,3 +1568,17 @@ html[data-theme="forest"] .order-dash-close:hover {
 }
 .subtab-btn.subtab-dragging { opacity: .5; }
 .subtab-btn { user-select: none; }
+
+/* v28: 子标签拖拽时的「丨」落点指示器（跟主标签 #tabDropIndicator 同款样式） */
+#subtabDropIndicator {
+  position: fixed; z-index: 99999; pointer-events: none; display: none;
+  width: 3px; border-radius: 2px;
+  background: #38bdf8; box-shadow: 0 0 10px #38bdf8, 0 0 20px rgba(56,189,248,.5);
+}
+#subtabDropIndicator::before, #subtabDropIndicator::after {
+  content: ''; position: absolute; left: 50%; transform: translateX(-50%);
+  width: 7px; height: 7px; border-radius: 50%; background: #38bdf8;
+  box-shadow: 0 0 4px #38bdf8;
+}
+#subtabDropIndicator::before { top: -3px; }
+#subtabDropIndicator::after { bottom: -3px; }
