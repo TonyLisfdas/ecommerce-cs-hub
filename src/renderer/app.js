@@ -206,6 +206,7 @@
     bindToolbarEvents();
     bindCopyUrlButton(); // v14: 复制当前网址按钮
     bindSetOrderUrlButton(); // v15: 设为订单页网址按钮
+  bindBackToCsButton(); // v26: 回到客服页
     bindOrderDashboardEvents(); // v11 Phase D/E 订单仪表盘 + 新订单提醒
     setTimeout(fitWebviews, 300); // v12: 启动完成后首次像素校正
 
@@ -1304,6 +1305,13 @@
         });
         fillHit++;
       });
+      // v26: 没存密码就先别闷声填一半 —— 直接告诉老板去保险箱补
+      if (!shop.password && shop.username) {
+        showCopyUrlToast('只存了账号，没存密码：打开工具栏「🔐 账密保险箱」把密码补上再点「保存」，一键填充才会连账号带密码都填上。', '#f59e0b');
+      }
+      if (!shop.password && !shop.username) {
+        showCopyUrlToast('这个店铺还没保存过账密：先打开工具栏「🔐 账密保险箱」保存账号和密码。', '#f59e0b');
+      }
       if (!fillHit) console.log('[自动填充] 没找到该店铺的 webview');
     } else {
       const pane = document.getElementById(`pane_${shop.id}`);
@@ -1346,7 +1354,8 @@
       color = '#f59e0b';
     } else {
       msg = 'ℹ️ 【' + name + '】这个页面上没找到登录框\n'
-        + '多半是已经登录了，或者这个平台要扫码登录（扫码的就填不了，得手动扫）';
+        + '如果这是登录页但没框，多半是平台要扫码登录（扫码的填不了，得手动扫）；\n' +
+        + '如果页面已经在正常工作台里（没有登录框），属正常现象 —— 要重新登录先清 Cookie 或点「🏠 回到客服页」';
       color = '#64748b';
     }
     if (typeof showCopyUrlToast === 'function') showCopyUrlToast(msg, color);
@@ -2230,6 +2239,31 @@
   function bindSetOrderUrlButton() {
     const btn = document.getElementById("btnSetOrderUrl");
     if (btn) btn.addEventListener("click", setCurrentAsOrderUrl);
+  }
+
+  // v26: 「回到客服页」—— 登录失效被平台跳走后（比如抖店被跳去商家后台），
+  //      点一下强制把客服 webview 导航回官方客服地址，不用自己找地址栏（webview 没有地址栏）。
+  function bindBackToCsButton() {
+    const btn = document.getElementById("btnBackToCs");
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      const shop = getActiveShop();
+      if (!shop) return;
+      const plat = platformMap[shop.platformId] || platforms[0];
+      const targetUrl = shop.customUrl || plat.url || (plat.backupUrls && plat.backupUrls[0] ? plat.backupUrls[0].url : '');
+      if (!targetUrl) { showCopyUrlToast('没找到「' + (plat.shortName || '') + '」的官方客服地址。', '#f59e0b'); return; }
+      if (isElectron) {
+        const wv = document.getElementById('webview_' + shop.id);
+        if (wv) {
+          wv.setAttribute('src', targetUrl);
+          showCopyUrlToast('「' + (shop.shopName || shop.id) + '」客服页已跳回：' + targetUrl, '#10b981');
+        } else {
+          showCopyUrlToast('没找到客服 webview：点一下「客服」子标签，再点「🏠 回到客服页」。', '#f59e0b');
+        }
+      } else {
+        showCopyUrlToast('预览模式跳不了真网页。', '#64748b');
+      }
+    });
   }
 
   // ===========================================================================
