@@ -951,6 +951,9 @@
     if (!shop) return;
 
     appState.activeShopId = shop.id;
+    // v29: 切到这个店铺 → 重置它的静默计数，下一条新消息立刻正常弹
+    delete alertRepeat[shop.id];
+    delete alertLastAt[shop.id];
     const rt = runtimeShops[shop.id];
     if (rt) {
       rt.flashing = false;
@@ -998,9 +1001,34 @@
   // ============================================================================
   // 6. ★ 核心功能：收到新消息时触发标签页变色呼吸闪烁 + 提示音 + 悬浮通知
   // ============================================================================
+  // v29: 同条去重 + 没打开就越来越静默（指数退避）
+  const MSG_DEDUP_MS = 5000; // 5 秒内同店铺同文本只弹 1 次（4 路同时触发去重）
+  const msgDedup = {};   // shopId -> { text, at }
+  const alertLastAt = {}; // shopId -> 上次真正弹窗的时间
+  const alertRepeat = {};  // shopId -> 连续没被打开的次数
+
   function handleIncomingMessageAlert(shopId, buyerName, messageText) {
     const shop = appState.shops.find((s) => s.id === shopId);
     if (!shop) return;
+    // —— v29 去重 ——
+    const now = Date.now();
+    if (msgDedup[shopId] && msgDedup[shopId].text === messageText && (now - msgDedup[shopId].at) < MSG_DEDUP_MS) {
+      return; // 同一条 5 秒内已弹过，跳过
+    }
+    msgDedup[shopId] = { text: messageText, at: now };
+    // —— v29 指数退避：用户一直没打开这个店铺，提示间隔越来越长 ——
+    if (shopId !== appState.activeShopId) {
+      const repeats = (alertRepeat[shopId] || 0) + 1;
+      alertRepeat[shopId] = repeats;
+      const intervals = [0, 15000, 30000, 60000, 120000, 300000]; // 首次/15s/30s/60s/2min/5min(封顶)
+      const needed = intervals[Math.min(repeats, intervals.length - 1)];
+      if (alertLastAt[shopId] && (now - alertLastAt[shopId]) < needed) {
+        return; // 还没到间隔，这次静默跳过
+      }
+    }
+    // 用户正在看这个店铺 → 重置静默计数，下一条正常弹
+    delete alertRepeat[shopId];
+    alertLastAt[shopId] = now;
     const plat = platformMap[shop.platformId] || platforms[0];
     const rt = runtimeShops[shop.id];
 
