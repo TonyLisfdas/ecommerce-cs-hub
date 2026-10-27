@@ -666,6 +666,11 @@
           handleOrderDebug(shop.id, event.args[0] || {});
         } else if (event.channel === 'cs-autofill-result') {
           handleAutoFillResult(shop.id, event.args[0] || {});
+        } else if (event.channel === 'cs-error-page-reload') {
+          // v32: 客服页「由于网络原因」错误页被网页内部看门狗自动重载了，主界面给个提示
+          const er = event.args[0] || {};
+          const tipfn32 = (typeof showCopyUrlToast === 'function') ? showCopyUrlToast : function () {};
+          tipfn32(shop.shopName + ' 客服页加载失败，已自动重载（第 ' + (er.count || 1) + ' 次）', '#f97316');
         } else if (event.channel === 'cs-status') {
           const sp = event.args[0] || {};
           setShopStatus(shop.id, (kind === 'order' ? 'order' : 'cs'), sp.status || 'unknown', sp.src || '');

@@ -1040,6 +1040,32 @@ const { ipcRenderer } = require('electron');
       setInterval(csReportStatus, 10000);
       setTimeout(csReportStatus, 6000);
     }
+    // v32: 客服页错误页看门狗 —— 京东那种「由于网络原因，页面加载失败」是服务器 200 返回的错误页，
+    // webview 的 did-fail-load 不会触发，所以从网页内部检测：连续 60 秒都在错误页就自动重载。
+    // 只给客服页跑（订单页有它自己的 90s 扫描 + 自动刷新）。
+    if (config && !(Array.isArray(config.orderUnreadKeyword) && config.orderUnreadKeyword.length)) {
+      var csErrStreak = 0, csErrReloads = 0, csErrLastAt = 0;
+      setInterval(function () {
+        try {
+          var bt = (document.body && document.body.innerText) || '';
+          if (!/由于网络原因|页面加载失败|网络异常/.test(bt) || bt.length > 300) {
+            csErrStreak = 0; // 页面正常了，复位
+            return;
+          }
+          csErrStreak += 1;
+          if (csErrStreak < 2) return; // 连续 2 次（60 秒）都在错误页才动手
+          var now = Date.now();
+          if (csErrReloads >= 5) return; // 上限 5 次，之后交给人工「🏠 回到客服页」
+          var wait = [120000, 210000, 300000][Math.min(csErrReloads, 2)]; // 2分/3.5分/5分封顶
+          if (now - csErrLastAt < wait) return;
+          csErrLastAt = now;
+          csErrReloads += 1;
+          csErrStreak = 0;
+          try { ipcRenderer.sendToHost('cs-error-page-reload', { count: csErrReloads }); } catch (e) {}
+          location.reload();
+        } catch (e) {}
+      }, 30000);
+    }
     if (config && config.cleanModeEnabled && config.cleanCss) {
       applyCleanMode(true, config.cleanCss);
     }
