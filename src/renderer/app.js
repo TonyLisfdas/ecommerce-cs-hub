@@ -616,6 +616,46 @@
           }
         }
       });
+
+      // v31: 客服页加载失败自动恢复（京东那种「由于网络原因」不用手动刷了）
+      {
+        const csLoadRecover = { fails: 0, timer: null, lastOkAt: Date.now() };
+        const RELOAD_DELAYS = [10000, 20000, 40000, 80000]; // 10s→20s→40s→80s(封顶)
+        const tipfn31 = (typeof showCopyUrlToast === 'function') ? showCopyUrlToast : function () {};
+        webview.addEventListener('did-finish-load', () => {
+          if (csLoadRecover.fails > 0) tipfn31('客服页已自动恢复加载：' + shop.shopName, '#10b981');
+          csLoadRecover.fails = 0;
+          csLoadRecover.lastOkAt = Date.now();
+        });
+        webview.addEventListener('did-fail-load', (e) => {
+          if (e.cancelable && e.cancelled) return;
+          if (e.errorCode === -3) return; // ERR_ABORTED：切页中断，不算失败
+          csLoadRecover.fails += 1;
+          const delay = RELOAD_DELAYS[Math.min(csLoadRecover.fails - 1, RELOAD_DELAYS.length - 1)];
+          if (csLoadRecover.timer) clearTimeout(csLoadRecover.timer);
+          csLoadRecover.timer = setTimeout(function () {
+            try {
+              // 回到 webview 设定的 src（店铺配置的客服网址），比盲目 reload 更稳
+              if (webview.src) webview.loadURL(webview.src);
+              else webview.reload();
+            } catch (err) {}
+          }, delay);
+          if (csLoadRecover.fails === 1) {
+            tipfn31('客服页加载失败，自动重试中：' + shop.shopName, '#f97316');
+          } else if (csLoadRecover.fails === RELOAD_DELAYS.length + 1) {
+            tipfn31(shop.shopName + ' 客服页连续失败，已放慢重试，可点「🏠 回到客服页」', '#f97316');
+          }
+        });
+        // 看门狗：3 分钟没一次成功加载就强制重载一次（防事件漏报）
+        setInterval(function () {
+          if (Date.now() - csLoadRecover.lastOkAt > 180000 && !csLoadRecover.timer && csLoadRecover.fails > 0) {
+            try {
+              if (webview.src) webview.loadURL(webview.src);
+              else webview.reload();
+            } catch (err) {}
+          }
+        }, 30000);
+      }
     }
     // v11 Phase D: 订单页「待发货」数字感知
     if (kind === 'order') {
