@@ -332,13 +332,13 @@ ipcMain.handle('cs-clear-shop-session', async (event, partitionName) => {
   return { ok: true };
 });
 
-ipcMain.handle('cs-trigger-system-alert', async (event, { shopId, shopName, platformName, message, flashTaskbar, desktopNotification }) => {
+ipcMain.handle('cs-trigger-system-alert', async (event, { shopId, shopName, platformName, message, flashTaskbar, desktopNotification, customTitle }) => {
   if (mainWindow && flashTaskbar && !mainWindow.isFocused()) {
     mainWindow.flashFrame(true);
   }
   if (desktopNotification && Notification.isSupported()) {
     const notif = new Notification({
-      title: `【${platformName}】${shopName} 收到新消息`,
+      title: customTitle ? customTitle : `【${platformName}】${shopName} 收到新消息`,
       body: message || '有买家发来新的咨询消息，点击立即切换接待',
       silent: true
     });

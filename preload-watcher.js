@@ -896,9 +896,32 @@ const { ipcRenderer } = require('electron');
   }
 
   let lastStatusSent = null;
+  // v34: 登录失效识别 —— 页面停在登录页（URL 含 login/passport/signin，或标题含「登录」且正文出现登录关键词）
+  function csPageLooksLikeLogin() {
+    try {
+      var pathHost = '';
+      var title = '';
+      var head = '';
+      try { pathHost = (location.host + location.pathname).toLowerCase(); } catch (e) {}
+      try { title = document.title || ''; } catch (e) {}
+      try { head = ((document.body && document.body.innerText) || '').slice(0, 400); } catch (e) {}
+      var urlLogin = /(^|[.\/])(login|passport|signin|sso)([.\/-]|$)/.test(pathHost);
+      var titleLogin = /登录|login/i.test(title);
+      var bodyLogin = /扫码登录|密码登录|手机号登录|重新登录|登录后继续|未登录/.test(head);
+      return urlLogin || (titleLogin && bodyLogin);
+    } catch (e) { return false; }
+  }
+
   function csReportStatus() {
     if (!platformConfig) return;
     let st = null, src = '';
+
+    // v34: ① 先查登录失效（页面停在登录页）—— 优先级最高
+    try {
+      if (csPageLooksLikeLogin()) {
+        st = 'offline'; src = '页面停在登录页（登录已失效，请重新登录）';
+      }
+    } catch (e) {}
 
     // ① 先看平台后台里客服自己设的状态
     try {
@@ -1036,10 +1059,11 @@ const { ipcRenderer } = require('electron');
       // v22: 抖店来了新订单页面自己不动，数字不变，仪表盘不更新也不提醒。
       //      所以每 3 分钟让订单页重新查一次（具体做法见 csOrderAutoRefresh）。
       setInterval(csOrderAutoRefresh, ORDER_REFRESH_MS);
-      // v24: 主标签那颗圆点（在线 / 忙碌 / 离线）—— 每 10 秒报一次
-      setInterval(csReportStatus, 10000);
-      setTimeout(csReportStatus, 6000);
     }
+    // v34: 状态上报扩到全部 webview（原来只在订单页跑）—— 客服页登录失效才能被識别
+    //      v24: 主标签那颗圆点（在线 / 忙碌 / 离线）—— 每 10 秒报一次
+    setInterval(csReportStatus, 10000);
+    setTimeout(csReportStatus, 6000);
     // v32: 客服页错误页看门狗 —— 京东那种「由于网络原因，页面加载失败」是服务器 200 返回的错误页，
     // webview 的 did-fail-load 不会触发，所以从网页内部检测：连续 60 秒都在错误页就自动重载。
     // 只给客服页跑（订单页有它自己的 90s 扫描 + 自动刷新）。

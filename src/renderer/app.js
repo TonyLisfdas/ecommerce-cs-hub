@@ -268,6 +268,38 @@
     const prev = shopStatus[shopId][page];
     if (prev && prev.status === st && prev.src === src) return;
     shopStatus[shopId][page] = { status: st, src: src || '' };
+    // v34: 登录失效提醒 —— 状态变 offline（停在登录页）就红字+声音+系统通知；恢复则绿字
+    {
+      const prevSt = prev ? prev.status : null;
+      const tip34 = (typeof showCopyUrlToast === 'function') ? showCopyUrlToast : function () {};
+      const shop34 = (appState.shops || []).find((s) => s.id === shopId);
+      const plat34 = shop34 ? (platformMap[shop34.platformId] || {}) : {};
+      const name34 = shop34 ? shop34.shopName : shopId;
+      if (st === 'offline' && prevSt !== 'offline' && /登录页/.test(src || '')) {
+        window.__loginExpAlertAt = window.__loginExpAlertAt || {};
+        const now34 = Date.now();
+        if (!window.__loginExpAlertAt[shopId] || now34 - window.__loginExpAlertAt[shopId] > 60000) {
+          window.__loginExpAlertAt[shopId] = now34;
+          tip34('⚠️ ' + name34 + ' 登录状态已失效，请重新登录', '#ef4444');
+          try { if (typeof playAlertChime === 'function') playAlertChime(); } catch (e) {}
+          try {
+            if (window.csElectronAPI && window.csElectronAPI.triggerSystemAlert) {
+              window.csElectronAPI.triggerSystemAlert({
+                shopId: shopId,
+                shopName: name34,
+                platformName: plat34.shortName || plat34.name || '',
+                customTitle: '【' + (plat34.shortName || plat34.name || '平台') + '】登录状态已失效，请重新登录',
+                message: (src || '') + ' —— 点击回到该店铺处理',
+                flashTaskbar: !(appState.soundSettings && appState.soundSettings.flashTaskbar === false),
+                desktopNotification: !(appState.soundSettings && appState.soundSettings.desktopNotification === false)
+              });
+            }
+          } catch (e) {}
+        }
+      } else if (st !== 'offline' && prevSt === 'offline') {
+        tip34('✓ ' + name34 + ' 登录状态已恢复正常', '#10b981');
+      }
+    }
     paintStatusDot(shopId);
   }
 
@@ -614,6 +646,10 @@
             rt.unreadCount = payload.unreadCount;
             updateTabBadgesInPlace();
           }
+        } else if (event.channel === 'cs-status') {
+          // v34: 客服 webview 也上报状态（登录失效识别），跟订单页共用 setShopStatus
+          const sp34 = event.args[0] || {};
+          setShopStatus(shop.id, 'cs', sp34.status || 'unknown', sp34.src || '');
         }
       });
 
