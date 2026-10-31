@@ -9,9 +9,10 @@
  * 5. 订单提醒：各平台待发货数字变化 → 声音 + 弹窗「XX平台有新订单」
  */
 
-const { app, BrowserWindow, ipcMain, session, Notification, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, session, Notification, shell, Menu, clipboard, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 const { PLATFORMS } = require('./src/platforms');
 
@@ -231,6 +232,61 @@ function createMainWindow() {
         }
         return { action: 'deny' };
       });
+
+      // v33: webview 内右键菜单（Electron 默认禁用，我们自己弹一个：能保存图片/视频/音频）
+      contents.on('context-menu', (e, params) => {
+        const items = [];
+        const { mediaType, srcURL, linkURL, canCopy, canPaste, canSelectAll } = params || {};
+        try {
+          if (mediaType === 'image' && srcURL) {
+            items.push({ label: '📥 保存图片', click: () => { try { contents.downloadURL(srcURL); } catch (_) {} } });
+            items.push({ label: '🔗 复制图片链接', click: () => clipboard.writeText(srcURL) });
+          }
+          if (mediaType === 'video' && srcURL) {
+            items.push({ label: '📥 保存视频', click: () => { try { contents.downloadURL(srcURL); } catch (_) {} } });
+            items.push({ label: '🔗 复制视频链接', click: () => clipboard.writeText(srcURL) });
+          }
+          if (mediaType === 'audio' && srcURL) {
+            items.push({ label: '📥 保存音频', click: () => { try { contents.downloadURL(srcURL); } catch (_) {} } });
+            items.push({ label: '🔗 复制音频链接', click: () => clipboard.writeText(srcURL) });
+          }
+          if (items.length) items.push({ type: 'separator' });
+          if (linkURL && mediaType === 'none') {
+            items.push({ label: '🔗 复制链接地址', click: () => clipboard.writeText(linkURL) });
+            items.push({ type: 'separator' });
+          }
+          items.push({ label: '📋 复制', enabled: !!canCopy, click: () => { try { contents.copy(); } catch (_) {} } });
+          items.push({ label: '📋 粘贴', enabled: !!canPaste, click: () => { try { contents.paste(); } catch (_) {} } });
+          items.push({ label: '📋 全选', enabled: !!canSelectAll, click: () => { try { contents.selectAll(); } catch (_) {} } });
+          items.push({ type: 'separator' });
+          items.push({ label: '🔄 重新加载', click: () => { try { contents.reload(); } catch (_) {} } });
+          items.push({ label: '🔍 检查（DevTools）', click: () => { try { contents.openDevTools({ mode: 'detach' }); } catch (_) {} } });
+          Menu.buildFromTemplate(items).popup();
+        } catch (err) {}
+      });
+
+      // v33: webview 里的下载默认弹"另存为"对话框（默认 %USERPROFILE%\Downloads），
+      //      避免下载直接丢进系统默认位置找不到。
+      {
+        const s33 = contents.session;
+        if (s33 && !s33.__csHubDownloadHooked) {
+          s33.__csHubDownloadHooked = true;
+          s33.on('will-download', (e, dl) => {
+            try {
+              e.preventDefault();
+              const suggested = dl.getFilename() || 'download.bin';
+              const defaultPath = path.join(os.homedir(), 'Downloads', suggested);
+              dialog.showSaveDialog({
+                title: '保存文件',
+                defaultPath: defaultPath
+              }).then((res) => {
+                if (!res.canceled && res.filePath) dl.setSavePath(res.filePath);
+                else dl.cancel();
+              }).catch(() => dl.cancel());
+            } catch (_) { try { dl.cancel(); } catch (__) {} }
+          });
+        }
+      }
     }
   });
 
